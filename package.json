@@ -2,9 +2,9 @@
   "name": "libre-hire",
   "version": "0.1.0",
   "private": true,
- "scripts": {
+"scripts": {
     "dev": "next dev",
-    "build": "next build --no-lint",
+    "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
