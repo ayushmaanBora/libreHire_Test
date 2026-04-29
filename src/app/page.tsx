@@ -12,7 +12,7 @@ export default function Home() {
   const [activeView, setActiveView] = useState<"search" | "how-to" | "about">("search");
   const [isConfigOpen, setIsConfigOpen] = useState(false);
 
-  // Config states (Restored Custom Fields)
+  // Config states
   const [config, setConfig] = useState({
     provider: "gemini",
     llmKey: "",
@@ -72,16 +72,26 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-white text-black font-sans selection:bg-black selection:text-white pb-20">
       
-      {/* NAVBAR */}
-      <header className="border-b-4 border-black px-8 py-6 flex justify-between items-center">
-        <div className="flex items-center gap-12">
-          <h1 
-            onClick={() => setActiveView("search")} 
-            className="text-2xl font-black tracking-tighter cursor-pointer hover:opacity-70 transition-opacity italic uppercase"
-          >
-            LIBRE-HIRE
-          </h1>
-          <nav className="hidden md:flex space-x-6 text-xs font-mono uppercase tracking-widest text-gray-500">
+      {/* NAVBAR - Mobile Optimized */}
+      <header className="border-b-4 border-black px-4 md:px-8 py-4 md:py-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 md:gap-0">
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-2 md:gap-12 w-full md:w-auto">
+          <div className="flex justify-between items-center w-full md:w-auto">
+            <h1 
+              onClick={() => setActiveView("search")} 
+              className="text-xl md:text-2xl font-black tracking-tighter cursor-pointer hover:opacity-70 transition-opacity italic uppercase"
+            >
+              LIBRE-HIRE_
+            </h1>
+            {/* Mobile Config Button */}
+            <button 
+              onClick={() => setIsConfigOpen(true)}
+              className="md:hidden border-2 border-black px-3 py-1 text-[10px] font-mono font-bold uppercase tracking-widest hover:bg-black hover:text-white transition-colors"
+            >
+              Config
+            </button>
+          </div>
+          
+          <nav className="flex space-x-4 md:space-x-6 text-[10px] md:text-xs font-mono uppercase tracking-widest text-gray-500 mt-2 md:mt-0">
             <button 
               onClick={() => setActiveView("how-to")} 
               className={`hover:text-black transition-colors ${activeView === "how-to" ? "text-black font-bold" : ""}`}
@@ -96,22 +106,24 @@ export default function Home() {
             </button>
           </nav>
         </div>
+
+        {/* Desktop Config Button */}
         <button 
           onClick={() => setIsConfigOpen(true)}
-          className="border-2 border-black px-4 py-2 text-xs font-mono font-bold uppercase tracking-widest hover:bg-black hover:text-white transition-colors"
+          className="hidden md:block border-2 border-black px-4 py-2 text-xs font-mono font-bold uppercase tracking-widest hover:bg-black hover:text-white transition-colors"
         >
           Configure Engine
         </button>
       </header>
 
-      <main className="max-w-4xl mx-auto px-6 mt-16">
+      <main className="max-w-4xl mx-auto px-4 md:px-6 mt-10 md:mt-16">
         
         {/* --- SEARCH VIEW --- */}
         {activeView === "search" && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-            {/* HERO - Resized to fit two lines */}
-            <div className="mb-16">
-              <h2 className="text-4xl md:text-[3.5rem] font-black text-gray-200 tracking-tighter uppercase mb-6 leading-[1.1]">
+            {/* HERO */}
+            <div className="mb-10 md:mb-16">
+              <h2 className="text-4xl md:text-[3.5rem] font-black text-gray-200 tracking-tighter uppercase mb-4 md:mb-6 leading-[1.1]">
                 STOP PAYING DATA BROKERS.<br/>SOURCE BUILDERS ETHICALLY.
               </h2>
               <p className="font-mono text-sm md:text-base leading-relaxed max-w-2xl font-semibold">
@@ -119,20 +131,20 @@ export default function Home() {
               </p>
             </div>
 
-            {/* SEARCH BAR */}
-            <form onSubmit={handleHunt} className="relative flex items-end mb-16 group">
+            {/* SEARCH BAR - Mobile Optimized */}
+            <form onSubmit={handleHunt} className="relative flex flex-col mb-12 md:mb-16 group">
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="systems engineers in delhi"
-                className="w-full text-3xl md:text-5xl font-bold bg-transparent border-b-4 border-black outline-none pb-4 placeholder:text-gray-300"
+                className="w-full text-xl sm:text-3xl md:text-5xl font-bold bg-transparent border-b-4 border-black outline-none pb-4 placeholder:text-gray-300 pr-0 md:pr-40"
                 autoFocus
               />
               <button 
                 type="submit" 
                 disabled={loading}
-                className="absolute right-0 bottom-4 bg-black text-white px-8 py-3 font-mono font-bold tracking-widest hover:bg-gray-800 disabled:opacity-50"
+                className="mt-4 md:mt-0 md:absolute right-0 bottom-4 bg-black text-white px-8 py-3 font-mono font-bold tracking-widest hover:bg-gray-800 disabled:opacity-50 w-full md:w-auto"
               >
                 {loading ? "HUNTING..." : "HUNT"}
               </button>
@@ -140,28 +152,28 @@ export default function Home() {
 
             {/* ERROR STATE */}
             {error && (
-              <div className="border-4 border-red-500 bg-red-50 text-red-700 p-6 font-mono text-sm uppercase font-bold text-center tracking-widest mb-12">
+              <div className="border-4 border-red-500 bg-red-50 text-red-700 p-4 md:p-6 font-mono text-xs md:text-sm uppercase font-bold text-center tracking-widest mb-12 break-words">
                 {error}
               </div>
             )}
 
             {/* RESULTS */}
-            <div className="space-y-16">
+            <div className="space-y-12 md:space-y-16">
               {results.map((profile, idx) => (
-                <div key={idx} className="border-l-8 border-black pl-8 relative">
+                <div key={idx} className="border-l-8 border-black pl-4 md:pl-8 relative">
                   
                   {/* Header: Avatar, Name, Score */}
-                  <div className="flex justify-between items-start mb-6">
-                    <div className="flex items-center gap-6">
-                      <img src={profile.avatar} alt={profile.handle} className="w-24 h-24 border-4 border-black object-cover" />
+                  <div className="flex flex-col sm:flex-row justify-between items-start mb-6 gap-4 sm:gap-0">
+                    <div className="flex items-center gap-4 md:gap-6">
+                      <img src={profile.avatar} alt={profile.handle} className="w-16 h-16 md:w-24 md:h-24 border-4 border-black object-cover" />
                       <div>
-                        <h3 className="text-3xl font-black uppercase tracking-tight">{profile.name}</h3>
-                        <a href={`https://github.com/${profile.handle}`} target="_blank" rel="noreferrer" className="font-mono text-gray-500 hover:text-black">
+                        <h3 className="text-xl md:text-3xl font-black uppercase tracking-tight break-all">{profile.name}</h3>
+                        <a href={`https://github.com/${profile.handle}`} target="_blank" rel="noreferrer" className="font-mono text-sm md:text-base text-gray-500 hover:text-black">
                           @{profile.handle}
                         </a>
                         
                         {/* Links */}
-                        <div className="flex gap-2 mt-3">
+                        <div className="flex flex-wrap gap-2 mt-2 md:mt-3">
                           {profile.email && (
                             <a href={`mailto:${profile.email}`} className="border-2 border-black text-[10px] font-mono px-2 py-1 uppercase hover:bg-black hover:text-white">Email</a>
                           )}
@@ -175,8 +187,8 @@ export default function Home() {
                       </div>
                     </div>
                     
-                    <div className="text-right">
-                      <div className={`text-6xl font-black ${profile.score >= 70 ? "text-blue-600" : "text-black"}`}>
+                    <div className="sm:text-right mt-2 sm:mt-0">
+                      <div className={`text-4xl md:text-6xl font-black ${profile.score >= 70 ? "text-blue-600" : "text-black"}`}>
                         {profile.score}
                       </div>
                       <div className="text-[10px] font-mono text-gray-400 uppercase tracking-widest mt-1">
@@ -186,20 +198,20 @@ export default function Home() {
                   </div>
 
                   {/* Languages */}
-                  <div className="flex flex-wrap gap-2 mb-8">
+                  <div className="flex flex-wrap gap-2 mb-6 md:mb-8">
                     {profile.languages?.map((lang: string) => (
-                      <span key={lang} className="bg-black text-white text-[10px] font-mono font-bold uppercase px-3 py-1">
+                      <span key={lang} className="bg-black text-white text-[10px] font-mono font-bold uppercase px-2 md:px-3 py-1">
                         {lang}
                       </span>
                     ))}
                   </div>
 
                   {/* Sourcing Logic Box */}
-                  <div className="border-4 border-black p-6 relative bg-gray-50">
-                    <div className="absolute -top-3 left-4 bg-black text-white text-[10px] font-mono font-bold uppercase px-3 py-1 tracking-widest">
+                  <div className="border-4 border-black p-4 md:p-6 relative bg-gray-50 mt-6 md:mt-0">
+                    <div className="absolute -top-3 left-4 bg-black text-white text-[10px] font-mono font-bold uppercase px-2 md:px-3 py-1 tracking-widest">
                       Sourcing Logic
                     </div>
-                    <p className="font-mono text-sm leading-relaxed italic text-gray-800">
+                    <p className="font-mono text-xs md:text-sm leading-relaxed italic text-gray-800">
                       "{profile.summary}"
                     </p>
                   </div>
@@ -213,10 +225,10 @@ export default function Home() {
         {/* --- HOW TO USE VIEW --- */}
         {activeView === "how-to" && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-3xl">
-            <h2 className="text-4xl font-black uppercase tracking-tighter mb-12 border-b-4 border-black pb-4">How to Use</h2>
-            <div className="space-y-12 font-mono text-sm">
+            <h2 className="text-3xl md:text-4xl font-black uppercase tracking-tighter mb-8 md:mb-12 border-b-4 border-black pb-4">How to Use</h2>
+            <div className="space-y-10 md:space-y-12 font-mono text-xs md:text-sm">
               <div>
-                <h3 className="text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">1. GitHub Token</h3>
+                <h3 className="text-lg md:text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">1. GitHub Token</h3>
                 <ol className="list-decimal pl-5 space-y-2 leading-relaxed">
                   <li>Go to <strong>GitHub → Settings → Developer Settings</strong>.</li>
                   <li>Click on <strong>Personal Access Tokens (Classic)</strong>.</li>
@@ -225,16 +237,16 @@ export default function Home() {
                 </ol>
               </div>
               <div>
-                <h3 className="text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">2. AI API Key</h3>
+                <h3 className="text-lg md:text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">2. AI API Key</h3>
                 <ol className="list-decimal pl-5 space-y-2 leading-relaxed">
-                  <li>Click <strong>CONFIGURE ENGINE</strong> in the top right corner.</li>
-                  <li>Select your preferred AI provider (Gemini, Claude, OpenAI, or Custom).</li>
+                  <li>Click <strong>CONFIG</strong> or <strong>CONFIGURE ENGINE</strong> in the top corner.</li>
+                  <li>Select your preferred AI provider (Gemini, Claude, OpenAI, or Custom API).</li>
                   <li>Paste your API key. This powers the semantic codebase review.</li>
                   <li>Click <strong>Save & Lock</strong>.</li>
                 </ol>
               </div>
               <div>
-                <h3 className="text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">3. Hunt</h3>
+                <h3 className="text-lg md:text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">3. Hunt</h3>
                 <p className="leading-relaxed mb-2">Search the way you actually speak.</p>
                 <ul className="list-disc pl-5 space-y-2 leading-relaxed">
                   <li><span className="text-green-600 font-bold">Example:</span> "Systems engineers in Delhi"</li>
@@ -251,31 +263,31 @@ export default function Home() {
         {/* --- ABOUT VIEW --- */}
         {activeView === "about" && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-3xl">
-            <h2 className="text-4xl font-black uppercase tracking-tighter mb-12 border-b-4 border-black pb-4">About Libre-Hire</h2>
-            <div className="space-y-10 font-mono text-sm leading-relaxed">
+            <h2 className="text-3xl md:text-4xl font-black uppercase tracking-tighter mb-8 md:mb-12 border-b-4 border-black pb-4">About Libre-Hire</h2>
+            <div className="space-y-8 md:space-y-10 font-mono text-xs md:text-sm leading-relaxed">
               <div>
-                <h3 className="text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">1. Deep Code Analysis</h3>
+                <h3 className="text-lg md:text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">1. Deep Code Analysis</h3>
                 <p>
                   Our engine bypasses vanity metrics. We weigh language complexity (C++ &gt; HTML) and actual repository output to find heads-down systems engineers, not just clout-chasers.
                 </p>
               </div>
 
               <div>
-                <h3 className="text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">2. Ethical Discovery</h3>
+                <h3 className="text-lg md:text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">2. Ethical Discovery</h3>
                 <p>
                   Unlike paid tools that buy leaked databases, Libre-Hire relies strictly on public, opt-in data. If a developer locks their email behind a noreply mask, we respect their boundary.
                 </p>
               </div>
 
               <div>
-                <h3 className="text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">3. Bring Your Own Keys</h3>
+                <h3 className="text-lg md:text-xl font-bold bg-black text-white inline-block px-3 py-1 mb-4 uppercase">3. Bring Your Own Keys</h3>
                 <p>
                   Recruiting data shouldn't be a luxury subscription. Connect your free GitHub token and your preferred AI API key via the Configure Engine menu for unlimited, throttle-free sourcing.
                 </p>
               </div>
               
               <div className="mt-12 pt-8 border-t-2 border-dashed border-gray-300">
-                <p className="text-xs text-gray-500 uppercase tracking-widest">LIBRE-HIRE // AGNOSTIC. OPEN. SELF-HOSTED. // 2026</p>
+                <p className="text-[10px] md:text-xs text-gray-500 uppercase tracking-widest">LIBRE-HIRE // AGNOSTIC. OPEN. SELF-HOSTED. // 2026</p>
               </div>
             </div>
           </div>
@@ -286,12 +298,12 @@ export default function Home() {
       {/* --- CONFIG MODAL --- */}
       {isConfigOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white border-4 border-black p-8 w-full max-w-md shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-            <h2 className="text-2xl font-black uppercase tracking-tighter mb-6 border-b-2 border-black pb-2">Engine Configuration</h2>
+          <div className="bg-white border-4 border-black p-6 md:p-8 w-full max-w-md shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl md:text-2xl font-black uppercase tracking-tighter mb-6 border-b-2 border-black pb-2">Engine Configuration</h2>
             
-            <div className="space-y-6 font-mono text-sm">
+            <div className="space-y-5 font-mono text-xs md:text-sm">
               <div>
-                <label className="block font-bold mb-2 uppercase tracking-widest text-xs">AI Provider</label>
+                <label className="block font-bold mb-2 uppercase tracking-widest">AI Provider</label>
                 <select 
                   value={config.provider} 
                   onChange={(e) => setConfig({...config, provider: e.target.value})}
@@ -300,12 +312,12 @@ export default function Home() {
                   <option value="gemini">Google Gemini</option>
                   <option value="anthropic">Anthropic Claude</option>
                   <option value="openai">OpenAI</option>
-                  <option value="custom">Custom (OpenAI Compatible)</option>
+                  <option value="custom">Custom API</option>
                 </select>
               </div>
               
               <div>
-                <label className="block font-bold mb-2 uppercase tracking-widest text-xs">LLM API Key</label>
+                <label className="block font-bold mb-2 uppercase tracking-widest">LLM API Key</label>
                 <input 
                   type="password" 
                   value={config.llmKey}
@@ -319,30 +331,30 @@ export default function Home() {
               {config.provider === "custom" && (
                 <>
                   <div>
-                    <label className="block font-bold mb-2 uppercase tracking-widest text-xs">Base URL</label>
+                    <label className="block font-bold mb-2 uppercase tracking-widest">Base URL</label>
                     <input 
                       type="text" 
                       value={config.baseUrl}
                       onChange={(e) => setConfig({...config, baseUrl: e.target.value})}
                       className="w-full border-2 border-black p-3 outline-none focus:bg-gray-50 placeholder:text-gray-300"
-                      placeholder="https://api.together.xyz/v1"
+                      placeholder="https://api.groq.com/openai/v1"
                     />
                   </div>
                   <div>
-                    <label className="block font-bold mb-2 uppercase tracking-widest text-xs">Model Name</label>
+                    <label className="block font-bold mb-2 uppercase tracking-widest">Model Name</label>
                     <input 
                       type="text" 
                       value={config.modelName}
                       onChange={(e) => setConfig({...config, modelName: e.target.value})}
                       className="w-full border-2 border-black p-3 outline-none focus:bg-gray-50 placeholder:text-gray-300"
-                      placeholder="meta-llama/Llama-3-70b-chat-hf"
+                      placeholder="llama3-70b-8192"
                     />
                   </div>
                 </>
               )}
 
               <div>
-                <label className="block font-bold mb-2 uppercase tracking-widest text-xs">GitHub Personal Token</label>
+                <label className="block font-bold mb-2 uppercase tracking-widest">GitHub Personal Token</label>
                 <input 
                   type="password" 
                   value={config.githubToken}
@@ -357,7 +369,7 @@ export default function Home() {
                   onClick={saveConfig}
                   className="flex-1 bg-black text-white border-2 border-black font-bold uppercase tracking-widest py-3 hover:bg-gray-800"
                 >
-                  Save & Lock
+                  Save
                 </button>
                 <button 
                   onClick={() => setIsConfigOpen(false)}
