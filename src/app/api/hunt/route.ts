@@ -17,6 +17,7 @@ interface LanguageBar { name: string; percentage: number; bytes: number; }
 interface ScoreBreakdown {
   relevance: number; activityRecency: number;
   codeQuality: number; profileSignal: number;
+  locationMatch?: number;
 }
 
 interface RepoSummary {
@@ -361,9 +362,10 @@ async function getLanguageProficiency(login: string, repos: any[], gHeaders: Hea
 
 function computeScore(
   user: any, langBars: LanguageBar[], events: any[], queryTerms: string[],
-  repos: any[], constraints: { must: string[]; negative: string[] } | null, mode: string
-): { total: number; breakdown: ScoreBreakdown } {
-  const bd: ScoreBreakdown = { relevance: 0, activityRecency: 0, codeQuality: 0, profileSignal: 0 };
+  repos: any[], constraints: { must: string[]; negative: string[] } | null, mode: string,
+  locationInfo?: { canonical: string; variants: string[]; isKnown: boolean } | null
+): { total: number; breakdown: ScoreBreakdown & { locationMatch: number } } {
+  const bd: ScoreBreakdown & { locationMatch: number } = { relevance: 0, activityRecency: 0, codeQuality: 0, profileSignal: 0, locationMatch: 0 };
   const topLangs = langBars.map(l => l.name.toLowerCase());
   const bioText = (user.bio || '').toLowerCase();
   const nameText = (user.name || user.login || '').toLowerCase();
@@ -456,7 +458,84 @@ function computeScore(
   if (user.name && user.name !== user.login) pts += 1;
   bd.profileSignal = Math.min(10, pts);
 
-  return { total: Math.round(bd.relevance + bd.activityRecency + bd.codeQuality + bd.profileSignal), breakdown: bd };
+  // ── LOCATION MATCH SCORING ──────────────────────────────────────────────────
+  // This is the critical fix: if a location was searched, it must affect ranking.
+  // A dev in Osaka scoring 94 should NOT beat a dev in Odisha scoring 80.
+  // Location match adds a bonus; wrong continent/country adds a big penalty.
+  if (locationInfo && mode !== 'person') {
+    const userLoc = (user.location || '').toLowerCase();
+    const searchLoc = locationInfo.canonical.toLowerCase();
+    const allVariants = locationInfo.variants.map(v => v.toLowerCase());
+
+    // Check if user location contains any of our search location variants
+    const exactMatch = allVariants.some(v => userLoc.includes(v) || v.includes(userLoc));
+    // Broader country-level match (India for UP/Odisha, Germany for Berlin, etc.)
+    const countryHints: Record<string, string[]> = {
+      // India — any Indian city/state should match "india"
+      india: ['india','delhi','mumbai','bangalore','bengaluru','hyderabad','chennai','kolkata',
+              'pune','ahmedabad','jaipur','lucknow','kanpur','nagpur','indore','bhopal',
+              'patna','agra','surat','kochi','coimbatore','vizag','guwahati','chandigarh',
+              'noida','gurgaon','gurugram','faridabad','thane','navi mumbai','mangalore',
+              'mangaluru','mysore','mysuru','hubli','belgaum','manipal','udupi',
+              'uttar pradesh','up','odisha','orissa','rajasthan','bihar','jharkhand',
+              'madhya pradesh','gujarat','maharashtra','karnataka','kerala','tamil nadu',
+              'andhra','telangana','west bengal','assam','punjab','haryana'],
+      usa: ['usa','united states','america','california','texas','new york','washington',
+            'massachusetts','illinois','colorado','georgia','florida','virginia','oregon'],
+      uk: ['uk','united kingdom','england','scotland','wales','london','manchester','birmingham'],
+      germany: ['germany','deutschland','berlin','munich','hamburg','frankfurt','cologne'],
+      canada: ['canada','toronto','vancouver','montreal','ottawa','calgary'],
+      australia: ['australia','sydney','melbourne','brisbane','perth'],
+      japan: ['japan','tokyo','osaka','kyoto','nagoya'],
+      china: ['china','beijing','shanghai','shenzhen','guangzhou'],
+      brazil: ['brazil','são paulo','rio de janeiro','brasília'],
+      france: ['france','paris','lyon','marseille'],
+      netherlands: ['netherlands','amsterdam','rotterdam'],
+      singapore: ['singapore'],
+      'south korea': ['south korea','korea','seoul','busan'],
+      pakistan: ['pakistan','karachi','lahore','islamabad'],
+      bangladesh: ['bangladesh','dhaka'],
+      'sri lanka': ['sri lanka','colombo'],
+    };
+
+    // Determine what country the SEARCH location belongs to
+    let searchCountry = '';
+    for (const [country, hints] of Object.entries(countryHints)) {
+      if (hints.some(h => searchLoc.includes(h) || allVariants.some(v => v.includes(h) || h.includes(v)))) {
+        searchCountry = country;
+        break;
+      }
+    }
+
+    // Determine what country the USER is in
+    let userCountry = '';
+    for (const [country, hints] of Object.entries(countryHints)) {
+      if (hints.some(h => userLoc.includes(h))) {
+        userCountry = country;
+        break;
+      }
+    }
+
+    if (exactMatch) {
+      // Perfect — city/region matches exactly
+      bd.locationMatch = 25;
+    } else if (searchCountry && userCountry && searchCountry === userCountry) {
+      // Same country, different city — partial credit
+      bd.locationMatch = 10;
+    } else if (searchCountry && userCountry && searchCountry !== userCountry) {
+      // Wrong country entirely — heavy penalty
+      bd.locationMatch = -20;
+    } else if (!user.location) {
+      // No location set — neutral (could be anywhere)
+      bd.locationMatch = 0;
+    } else {
+      // Location set but unrecognized region — small penalty
+      bd.locationMatch = -5;
+    }
+  }
+
+  const rawTotal = bd.relevance + bd.activityRecency + bd.codeQuality + bd.profileSignal + bd.locationMatch;
+  return { total: Math.max(0, Math.round(rawTotal)), breakdown: bd };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -653,7 +732,7 @@ ${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter
         send({ type: 'progress', step: 5, total: 6, label: `Scoring ${withLangs.length} candidates...` });
 
         const scored = withLangs.map(({ user, repos, events, langBars, calendar }) => {
-          const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, mode);
+          const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, mode, locationInfo);
           const own = repos.filter((r: any) => !r.fork);
           return {
             handle: user.login,
