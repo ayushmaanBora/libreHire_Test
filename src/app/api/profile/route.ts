@@ -184,7 +184,7 @@ Write a comprehensive 4-6 sentence profile assessment covering:
 4. Their community impact (stars, forks, followers)
 5. A sentence on what kind of role or team they would be ideal for
 
-Be specific and reference actual project names. Write in second person (e.g. "They built..."). No hollow phrases like "passionate developer".`;
+Be specific and reference actual project names. Write in THIRD PERSON throughout (e.g. "They built...", "Their work includes...", "They have demonstrated..."). A recruiter will read this — never use "you" or "your". No hollow phrases like "passionate developer".`;
 
         const assessment = await callAI(prompt, provider, llmKey, baseUrl, modelName);
 
