@@ -88,24 +88,49 @@ const LOCATION_ALIASES: Record<string, string[]> = {
   chicago:   ['chicago', 'illinois'],
 };
 
-function extractLocation(query: string): { canonical: string; variants: string[] } | null {
+function extractLocation(query: string): { canonical: string; variants: string[]; isKnown: boolean } | null {
   const lower = query.toLowerCase();
-  // Try each canonical location and its aliases
+
+  // 1. Check known city aliases first (fast path with pre-built variants)
   for (const [canonical, aliases] of Object.entries(LOCATION_ALIASES)) {
     for (const alias of aliases) {
-      // Match whole word with word boundaries
       const pattern = new RegExp('\\b' + alias.replace(/\s+/g, '\\s+') + '\\b', 'i');
       if (pattern.test(lower)) {
-        return { canonical, variants: aliases };
+        return { canonical, variants: aliases, isKnown: true };
       }
     }
   }
-  // Fallback: try to extract "in X" or "from X" pattern for unknown cities
-  const inMatch = lower.match(/\b(?:in|from|at|based in|located in)\s+([a-z][a-z\s]{1,20}?)(?:\s+(?:and|or|who|with|that|,)|$)/i);
-  if (inMatch) {
-    const loc = inMatch[1].trim();
-    return { canonical: loc, variants: [loc] };
+
+  // 2. Universal fallback — extract ANY location from natural language patterns.
+  // Covers: "in mangalore", "from nairobi", "based in kochi", "lagos developers"
+  // Strategy: try multiple patterns in order of specificity.
+
+  // Pattern A: explicit preposition — "in X", "from X", "at X", "based in X"
+  const prepMatch = lower.match(/\b(?:in|from|at|based in|located in|near)\s+([a-z][a-z\s]{1,25}?)(?=\s*(?:who|with|and|or|that|,|$))/i);
+  if (prepMatch) {
+    const loc = prepMatch[1].trim().replace(/\s+$/, '');
+    if (loc.length >= 3 && !['the','a','an','some','any','all'].includes(loc)) {
+      // Capitalize properly for GitHub (GitHub location search is case-insensitive but looks cleaner)
+      const canonical = loc.replace(/\b\w/g, c => c.toUpperCase());
+      return {
+        canonical,
+        // Generate variants: exact, with surrounding state/country context left to AI
+        variants: [loc, canonical],
+        isKnown: false,
+      };
+    }
   }
+
+  // Pattern B: "X developers", "X based", "X engineers" — location before role word
+  const prefixMatch = lower.match(/^([a-z][a-z\s]{1,20}?)\s+(?:developer|engineer|dev|programmer|coder|designer)/i);
+  if (prefixMatch) {
+    const loc = prefixMatch[1].trim();
+    if (loc.length >= 3) {
+      const canonical = loc.replace(/\b\w/g, c => c.toUpperCase());
+      return { canonical, variants: [loc, canonical], isKnown: false };
+    }
+  }
+
   return null;
 }
 
@@ -511,12 +536,25 @@ Rules:
           // For multi-language: search primary lang, then secondary as separate queries
           const secondaryLangFilter = secondaryLangs.length ? `language:"${secondaryLangs[0]}"` : primaryLangFilter;
 
+          // For unknown cities (isKnown=false), the AI must generate spelling variants
+          // e.g. "mangalore" → also try "mangaluru", "karnataka"
+          // For known cities, we already have the variants list.
+          const locationInstruction = locationInfo
+            ? locationInfo.isKnown
+              ? `Location confirmed: "${locationInfo.canonical}". Use these variants across queries: ${locationInfo.variants.slice(0,4).join(', ')}`
+              : `Location detected: "${locationInfo.canonical}" — this may be a smaller city. You MUST:
+  1. Use it exactly as-is in one query (location:"${locationInfo.canonical}")
+  2. Try the most common alternate spelling or local name (e.g. Mangalore→Mangaluru, Kochi→Cochin)
+  3. Try the state/province/region it belongs to (e.g. Mangalore→Karnataka, Kochi→Kerala)
+  4. Try a nearby major hub city that developers there might list as their location`
+            : 'No specific location detected — make skill-focused queries only';
+
           intentPrompt = `You are a technical recruiter building GitHub search queries.
 Query: "${userQuery}"
 Mode: ${mode}
 
-EXTRACTED DATA (use these exactly — do not invent or substitute):
-- Location: ${locationInfo ? `"${locationInfo.canonical}" (also try: ${locVariants.join(', ')})` : 'none detected'}
+EXTRACTED DATA:
+- ${locationInstruction}
 - Primary language: ${mustLangs[0] || 'none — infer from query context'}
 - Secondary languages: ${secondaryLangs.join(', ') || 'none'}
 - Negative filters: ${negFilter || 'none'}
@@ -524,14 +562,14 @@ EXTRACTED DATA (use these exactly — do not invent or substitute):
 Generate 4 GitHub search queries. Return ONLY JSON:
 {"queries":["q1","q2","q3","q4"],"queryTerms":["t1","t2","t3"]}
 
-Rules:
-- q1: ${locTag ? locTag + ' + ' : ''}${primaryLangFilter} type:user ${negFilter} (exact location tag + primary language)
-- q2: ${locVariants[0] ? '"' + locVariants[0] + '"' : locationInfo?.canonical || 'skill keyword'} ${primaryLangFilter} type:user ${negFilter} (raw location text + primary language)
-- q3: ${locTag ? locTag + ' + ' : ''}${secondaryLangFilter} type:user (location + secondary language, or try nearby region)
-- q4: ${primaryLangFilter} ${secondaryLangs.map(l => `language:"${l}"`).join(' ')} type:user ${negFilter} (no location — find experts globally then we filter by score)
-- If no location was detected, make all 4 queries skill-focused with different language/keyword combinations
-- If no language was detected, use in:bio to search by role keywords
-- queryTerms: list the primary language, secondary languages, and key role words (no location words)`;
+RULES:
+${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter} type:user ${negFilter}
+- q2: Use alternate spelling/local name of the city + ${primaryLangFilter} type:user ${negFilter} (e.g. if Mangalore, try "mangaluru"; if Bangalore, try "bengaluru")
+- q3: location of the state/region + ${primaryLangFilter} type:user ${negFilter} (broader area)
+- q4: ${primaryLangFilter} ${secondaryLangs.map(l => `language:"${l}"`).join(' ')} type:user ${negFilter} (no location, skill only — catches devs who didn't set location)` 
+: `- q1-q4: Skill-focused queries with different language and keyword combinations. Use in:bio for role keywords.`}
+- NEVER use a city from a different country or region than what was asked
+- queryTerms: list the primary language, secondary languages, and key role words (NO location words)`;
         }
 
         const params = await callAI(intentPrompt, provider, llmKey, baseUrl, modelName);
