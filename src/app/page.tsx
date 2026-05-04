@@ -9,7 +9,7 @@ import { useState, useEffect } from "react";
 interface ContactDetails { email:string|null; twitter:string|null; linkedin:string|null; portfolio:string|null; }
 interface CommitDay { date:string; count:number; }
 interface LanguageBar { name:string; percentage:number; bytes:number; }
-interface ScoreBreakdown { relevance:number; activityRecency:number; codeQuality:number; profileSignal:number; }
+interface ScoreBreakdown { relevance:number; activityRecency:number; codeQuality:number; profileSignal:number; locationMatch?:number; }
 interface RepoSummary { name:string; description:string|null; stars:number; language:string|null; topics:string[]; url?:string; forks?:number; }
 
 interface DeveloperProfile {
@@ -166,11 +166,14 @@ function ScoreBox({ score, breakdown }: { score:number; breakdown:Record<string,
   const bg = score>=75?'bg-black text-white':score>=50?'bg-gray-800 text-white':score>=30?'bg-gray-200 text-black':'bg-gray-100 text-gray-400';
 
   // Normalize breakdown to display pairs
-  const entries = Object.entries(breakdown).map(([k,v]) => ({
-    label: k.replace(/([A-Z])/g,' $1').replace('activityRecency','Activity').replace('codeQuality','Quality').replace('profileSignal','Profile').replace('relevance','Match').trim(),
-    val: v as number,
-    max: k==='relevance'||k==='codeQuality'?40:k==='activityRecency'||k==='activity'?30:k==='profileSignal'||k==='profileCompleteness'?20:10,
-  }));
+  const entries = Object.entries(breakdown)
+    .filter(([k]) => k !== 'locationMatch') // shown separately
+    .map(([k,v]) => ({
+      label: k.replace(/([A-Z])/g,' $1').replace('activityRecency','Activity').replace('codeQuality','Quality').replace('profileSignal','Profile').replace('relevance','Match').trim(),
+      val: v as number,
+      max: k==='relevance'||k==='codeQuality'?40:k==='activityRecency'||k==='activity'?30:k==='profileSignal'||k==='profileCompleteness'?20:10,
+    }));
+  const locMatch = (breakdown as any).locationMatch as number | undefined;
 
   return (
     <div className="flex flex-col items-end gap-2 flex-shrink-0">
@@ -185,6 +188,17 @@ function ScoreBox({ score, breakdown }: { score:number; breakdown:Record<string,
             <span className="text-[9px] font-mono text-gray-500 w-8 text-right">{Math.round(val)}</span>
           </div>
         ))}
+        {locMatch !== undefined && (
+          <div className="flex items-center gap-2 justify-end mt-0.5 pt-0.5 border-t border-gray-100">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-gray-400 w-14 text-right truncate">Location</span>
+            <div className={`w-14 h-1.5 rounded-full overflow-hidden ${locMatch >= 0 ? 'bg-gray-100' : 'bg-red-100'}`}>
+              {locMatch > 0 && <div className="h-full bg-green-600 rounded-full" style={{ width:`${Math.min((locMatch/25)*100,100)}%` }} />}
+            </div>
+            <span className={`text-[9px] font-mono w-8 text-right ${locMatch >= 20 ? 'text-green-600 font-bold' : locMatch > 0 ? 'text-gray-500' : 'text-red-400'}`}>
+              {locMatch > 0 ? `+${locMatch}` : locMatch}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );
