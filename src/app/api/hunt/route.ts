@@ -56,6 +56,85 @@ const ROLE_CONSTRAINTS: Record<string, { must: string[]; negative: string[] }> =
 // Person-search triggers: these mean "find this human", not "find devs with skill"
 const PERSON_TRIGGERS = ['founder','cto','ceo','creator','author','maintainer','lead','head of','director','built','made','who made','who created','who is','person'];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DETERMINISTIC LOCATION EXTRACTOR
+// Extracts city/country from query BEFORE the LLM sees it, so the LLM can't
+// misidentify the location. Handles "in Delhi", "from Mumbai", "delhi based" etc.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Known cities and their common alternate spellings / nearby regions
+const LOCATION_ALIASES: Record<string, string[]> = {
+  delhi:     ['delhi', 'new delhi', 'ncr', 'noida', 'gurgaon', 'gurugram', 'faridabad'],
+  bangalore: ['bangalore', 'bengaluru', 'blr', 'karnataka'],
+  mumbai:    ['mumbai', 'bombay', 'pune', 'maharashtra'],
+  hyderabad: ['hyderabad', 'hyd', 'telangana', 'secunderabad'],
+  chennai:   ['chennai', 'madras', 'tamil nadu'],
+  kolkata:   ['kolkata', 'calcutta', 'west bengal'],
+  berlin:    ['berlin', 'germany', 'munich', 'hamburg', 'frankfurt'],
+  london:    ['london', 'uk', 'england', 'manchester', 'birmingham'],
+  'new york':['new york', 'nyc', 'ny', 'brooklyn', 'manhattan'],
+  'san francisco':['san francisco', 'sf', 'bay area', 'silicon valley', 'san jose', 'palo alto'],
+  seattle:   ['seattle', 'wa', 'washington state'],
+  toronto:   ['toronto', 'canada', 'ontario', 'vancouver'],
+  singapore: ['singapore', 'sg'],
+  tokyo:     ['tokyo', 'japan', 'osaka'],
+  paris:     ['paris', 'france'],
+  amsterdam: ['amsterdam', 'netherlands', 'holland'],
+  stockholm: ['stockholm', 'sweden'],
+  zurich:    ['zurich', 'switzerland'],
+  dubai:     ['dubai', 'uae', 'abu dhabi'],
+  austin:    ['austin', 'texas', 'tx'],
+  boston:    ['boston', 'massachusetts', 'ma'],
+  chicago:   ['chicago', 'illinois'],
+};
+
+function extractLocation(query: string): { canonical: string; variants: string[] } | null {
+  const lower = query.toLowerCase();
+  // Try each canonical location and its aliases
+  for (const [canonical, aliases] of Object.entries(LOCATION_ALIASES)) {
+    for (const alias of aliases) {
+      // Match whole word with word boundaries
+      const pattern = new RegExp('\\b' + alias.replace(/\s+/g, '\\s+') + '\\b', 'i');
+      if (pattern.test(lower)) {
+        return { canonical, variants: aliases };
+      }
+    }
+  }
+  // Fallback: try to extract "in X" or "from X" pattern for unknown cities
+  const inMatch = lower.match(/\b(?:in|from|at|based in|located in)\s+([a-z][a-z\s]{1,20}?)(?:\s+(?:and|or|who|with|that|,)|$)/i);
+  if (inMatch) {
+    const loc = inMatch[1].trim();
+    return { canonical: loc, variants: [loc] };
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DETERMINISTIC MULTI-LANGUAGE EXTRACTOR
+// "rust developers who know C as well" → primaryLang=Rust, secondaryLangs=[C]
+// The LLM was applying Rust as the only filter and dropping C mentions entirely.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ALL_LANGUAGES = [
+  'TypeScript','JavaScript','Python','Rust','Go','C++','C#','C','Java','Kotlin',
+  'Swift','Ruby','PHP','Zig','Haskell','Elixir','Lua','Dart','Scala','Shell',
+  'HTML','CSS','Assembly','Objective-C','Fortran','Julia','Solidity','R','MATLAB',
+];
+
+function extractLanguages(query: string): { primary: string | null; secondary: string[] } {
+  const lower = query.toLowerCase();
+  const found: string[] = [];
+  
+  for (const lang of ALL_LANGUAGES) {
+    const pattern = new RegExp('\\b' + lang.toLowerCase().replace('+', '\\+').replace('#', '\\#') + '\\b', 'i');
+    if (pattern.test(lower)) found.push(lang);
+  }
+
+  if (!found.length) return { primary: null, secondary: [] };
+  // First mentioned is primary, rest are secondary skills
+  return { primary: found[0], secondary: found.slice(1) };
+}
+
 function detectQueryMode(query: string): { mode: 'technical'|'person'|'open'; constraints: { must: string[]; negative: string[] } | null } {
   const lower = query.toLowerCase();
 
@@ -69,6 +148,10 @@ function detectQueryMode(query: string): { mode: 'technical'|'person'|'open'; co
   for (const key of keys) {
     if (lower.includes(key)) return { mode: 'technical', constraints: ROLE_CONSTRAINTS[key] };
   }
+
+  // If explicit languages found but no role keyword, still treat as technical
+  const { primary } = extractLanguages(query);
+  if (primary) return { mode: 'technical', constraints: null };
 
   return { mode: 'open', constraints: null };
 }
@@ -261,12 +344,18 @@ function computeScore(
   const nameText = (user.name || user.login || '').toLowerCase();
 
   // RELEVANCE
+  // queryTerms now always contains primary + secondary language names + role words
+  // so we can match them against the dev's actual byte-weighted language list.
+  const langNameSet = new Set(langBars.map(l => l.name.toLowerCase()));
+  const top3Langs = topLangs.slice(0, 3);
+
   if (mode === 'person') {
-    // For person searches: name/bio/company match is the signal
     const allText = bioText + ' ' + nameText + ' ' + (user.company || '').toLowerCase();
     const hits = queryTerms.filter(t => allText.includes(t)).length;
     bd.relevance = Math.min(40, (hits / Math.max(queryTerms.length, 1)) * 40);
+
   } else if (constraints) {
+    // Technical mode with role constraints (kernel, rust-only, etc.)
     const mustL = constraints.must.map(l => l.toLowerCase());
     const negL = constraints.negative.map(l => l.toLowerCase().replace(/\+/g, ' '));
     const primary = topLangs[0] || '';
@@ -282,11 +371,40 @@ function computeScore(
     else bd.relevance = Math.min(18, topLangs.filter(l => mustL.some(m => l.includes(m))).length * 6);
 
     bd.relevance = Math.min(40, bd.relevance + queryTerms.filter(t => bioText.includes(t)).length * 3);
+
   } else {
-    // Open mode: bio + language name match
-    const allText = bioText + ' ' + topLangs.join(' ');
-    const hits = queryTerms.filter(t => allText.includes(t)).length;
-    bd.relevance = Math.min(40, (hits / Math.max(queryTerms.length, 1)) * 40);
+    // Open / multi-language mode (e.g. "rust devs who know C", "react with typescript")
+    // Primary language (first in queryTerms list) is worth most: 30 pts
+    // Each secondary language they also know: +5 pts each, up to 10
+    // Bio keyword matches: +2 pts each, up to 5
+    const langTerms = queryTerms.filter(t => langNameSet.has(t) ||
+      langBars.some(l => l.name.toLowerCase() === t || t.includes(l.name.toLowerCase())));
+    const roleTerms = queryTerms.filter(t => !langTerms.includes(t));
+
+    const primaryLangTerm = langTerms[0] || '';
+    const secondaryLangTerms = langTerms.slice(1);
+
+    // Primary language match: find it in their top 3 by bytes
+    const primaryLangPct = langBars.find(l => l.name.toLowerCase() === primaryLangTerm)?.percentage || 0;
+    const primaryScore = primaryLangTerm
+      ? (top3Langs.some(l => l.includes(primaryLangTerm) || primaryLangTerm.includes(l)) ? 30 : primaryLangPct > 5 ? 15 : 0)
+      : 20; // No primary lang specified → open query, give partial credit
+
+    // Secondary lang bonus: they know it at all (any %) = +5 per lang
+    const secondaryScore = Math.min(10, secondaryLangTerms.filter(t =>
+      langBars.some(l => l.name.toLowerCase() === t || t.includes(l.name.toLowerCase()))
+    ).length * 5);
+
+    // Bio/role keyword bonus
+    const bioScore = Math.min(5, roleTerms.filter(t => bioText.includes(t)).length * 2);
+
+    // Penalty if their codebase has NONE of the requested languages
+    const hasAnyRequestedLang = langTerms.length === 0 || langTerms.some(t =>
+      langBars.some(l => l.name.toLowerCase() === t)
+    );
+    const zeroLangPenalty = hasAnyRequestedLang ? 0 : -10;
+
+    bd.relevance = Math.min(40, Math.max(0, primaryScore + secondaryScore + bioScore + zeroLangPenalty));
   }
 
   // ACTIVITY RECENCY
@@ -355,8 +473,18 @@ export async function POST(req: Request) {
         // ── STAGE 1: AI QUERY GENERATION ───────────────────────────────────
         send({ type: 'progress', step: 1, total: 6, label: 'Understanding your search intent...' });
 
+        // ── DETERMINISTIC PRE-PROCESSING ─────────────────────────────────────
+        // Extract location and languages from query BEFORE the LLM sees it.
+        // This prevents the LLM from misidentifying "Delhi" as Bangalore or
+        // dropping secondary language mentions like "who know C as well".
+        const locationInfo = extractLocation(userQuery);
+        const langInfo = extractLanguages(userQuery);
+
+        // Build the primary language filter for GitHub search
+        // Use constraint must-list if we have one, otherwise use extracted lang
         const negFilter = constraints ? constraints.negative.map(l => `-language:"${l}"`).join(' ') : '';
-        const mustLangs = constraints?.must || [];
+        const mustLangs = constraints?.must || (langInfo.primary ? [langInfo.primary] : []);
+        const secondaryLangs = langInfo.secondary; // "also knows C" type skills
 
         let intentPrompt: string;
 
@@ -376,28 +504,50 @@ Rules:
 - queryTerms: key identifying words from the query (name parts, project name, company)
 - Do NOT add language filters for person searches`;
         } else {
+          // Build location-aware query strings using deterministic extraction
+          const locTag = locationInfo ? `location:"${locationInfo.canonical}"` : '';
+          const locVariants = locationInfo ? locationInfo.variants.slice(0, 2) : [];
+          const primaryLangFilter = mustLangs.length ? `language:"${mustLangs[0]}"` : '';
+          // For multi-language: search primary lang, then secondary as separate queries
+          const secondaryLangFilter = secondaryLangs.length ? `language:"${secondaryLangs[0]}"` : primaryLangFilter;
+
           intentPrompt = `You are a technical recruiter building GitHub search queries.
 Query: "${userQuery}"
 Mode: ${mode}
-${mustLangs.length ? `REQUIRED languages: ${mustLangs.join(', ')}` : 'No strict language requirement — infer from context'}
-${negFilter ? `MANDATORY negative filters for all queries: ${negFilter}` : ''}
+
+EXTRACTED DATA (use these exactly — do not invent or substitute):
+- Location: ${locationInfo ? `"${locationInfo.canonical}" (also try: ${locVariants.join(', ')})` : 'none detected'}
+- Primary language: ${mustLangs[0] || 'none — infer from query context'}
+- Secondary languages: ${secondaryLangs.join(', ') || 'none'}
+- Negative filters: ${negFilter || 'none'}
 
 Generate 4 GitHub search queries. Return ONLY JSON:
 {"queries":["q1","q2","q3","q4"],"queryTerms":["t1","t2","t3"]}
 
 Rules:
-- q1: location tag + language (e.g. "location:bangalore language:TypeScript type:user")
-- q2: raw location + role keyword + language (e.g. "bangalore react developer language:TypeScript type:user")
-- q3: nearby region + language (e.g. "location:karnataka language:TypeScript type:user")
-- q4: skill/role keyword only, no location (e.g. "react developer language:TypeScript type:user")
-- For open mode with no clear language, use in:bio to search profile text (e.g. "startup founder in:bio type:user")
-- ${negFilter ? 'APPEND all negative filters to every query' : 'No negative filters needed'}
-- queryTerms: 3-5 technical/role keywords (no location)`;
+- q1: ${locTag ? locTag + ' + ' : ''}${primaryLangFilter} type:user ${negFilter} (exact location tag + primary language)
+- q2: ${locVariants[0] ? '"' + locVariants[0] + '"' : locationInfo?.canonical || 'skill keyword'} ${primaryLangFilter} type:user ${negFilter} (raw location text + primary language)
+- q3: ${locTag ? locTag + ' + ' : ''}${secondaryLangFilter} type:user (location + secondary language, or try nearby region)
+- q4: ${primaryLangFilter} ${secondaryLangs.map(l => `language:"${l}"`).join(' ')} type:user ${negFilter} (no location — find experts globally then we filter by score)
+- If no location was detected, make all 4 queries skill-focused with different language/keyword combinations
+- If no language was detected, use in:bio to search by role keywords
+- queryTerms: list the primary language, secondary languages, and key role words (no location words)`;
         }
 
         const params = await callAI(intentPrompt, provider, llmKey, baseUrl, modelName);
         if (!params?.queries?.length) throw new Error('AI failed to build queries.');
-        const queryTerms: string[] = params.queryTerms || [];
+        // Merge AI-returned queryTerms with our deterministically extracted languages
+        // This ensures primary + secondary langs are always in queryTerms for scoring
+        const aiTerms: string[] = params.queryTerms || [];
+        const detectedLangTerms = [
+          ...(langInfo.primary ? [langInfo.primary.toLowerCase()] : []),
+          ...langInfo.secondary.map(l => l.toLowerCase()),
+        ];
+        // Merge: extracted langs first (they're authoritative), then AI terms
+        const queryTerms: string[] = [
+          ...detectedLangTerms,
+          ...aiTerms.filter(t => !detectedLangTerms.includes(t.toLowerCase())),
+        ];
 
         // ── STAGE 2: GITHUB SEARCH ─────────────────────────────────────────
         send({ type: 'progress', step: 2, total: 6, label: `Running ${params.queries.length} searches on GitHub...` });
