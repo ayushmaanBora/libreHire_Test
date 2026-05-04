@@ -474,32 +474,43 @@ export default function Home() {
   const saveConfig = () => { localStorage.setItem('librehire_config', JSON.stringify(config)); setIsConfigOpen(false); };
 
   async function streamRequest(endpoint: string, body: object, totalSteps: number) {
-    setLoading(true); setError(''); setProgress({ step:1, total:totalSteps, label:'Starting...' });
-
-    const res = await fetch(endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
-    if (!res.body) throw new Error('No stream from server');
-
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream:true });
-      const lines = buf.split('\n'); buf = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const msg = JSON.parse(line.slice(6));
-          if (msg.type === 'progress') setProgress({ step:msg.step, total:msg.total, label:msg.label });
-          else if (msg.type === 'done') { setLoading(false); return msg.data; }
-          else if (msg.type === 'error') { setError(msg.message); setLoading(false); return null; }
-        } catch { /* skip */ }
+    setLoading(true); setError(''); setProgress({ step: 1, total: totalSteps, label: 'Starting...' });
+    let result: any = null;
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(`Server ${res.status}: ${t.slice(0, 200)}`);
       }
+      if (!res.body) throw new Error('No stream from server');
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buf += dec.decode(value, { stream: !done });
+        const lines = buf.split('\n');
+        buf = done ? '' : (lines.pop() || '');
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const msg = JSON.parse(line.slice(6));
+            if (msg.type === 'progress') setProgress({ step: msg.step, total: msg.total, label: msg.label });
+            else if (msg.type === 'done') result = msg.data;
+            else if (msg.type === 'error') { setError(msg.message); setLoading(false); return null; }
+          } catch { /* skip malformed */ }
+        }
+        if (done) break;
+      }
+    } catch (err: any) {
+      setError(err.message || 'Something went wrong. Check your API keys and GitHub token.');
     }
     setLoading(false);
-    return null;
+    return result;
   }
 
   const handleHunt = async (e: React.FormEvent) => {
