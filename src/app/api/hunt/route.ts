@@ -489,14 +489,25 @@ Rules:
           };
         });
 
-        const top20 = scored.sort((a, b) => b.score - a.score).slice(0, 20);
+        // For person searches: cap to top 3 only — showing 20 people when
+        // someone searches "CTO of Zerodha" is confusing and disrespectful.
+        // For technical searches: keep top 20 for variety.
+        const resultCap = mode === 'person' ? 3 : 20;
+        const topCandidates = scored.sort((a, b) => b.score - a.score).slice(0, resultCap);
 
         // ── STAGE 6: RICH AI ASSESSMENT ────────────────────────────────────
         send({ type: 'progress', step: 6, total: 6, label: `AI reviewing code output & writing assessments...` });
 
+        // For person mode: ask AI to also re-rank by identity match (name/bio/company)
+        // so the actual person always floats to the top even if their score is close.
+        const personRerankNote = mode === 'person'
+          ? `IMPORTANT: The user is searching for a specific person ("${userQuery}"). If any candidate's name, bio, or company clearly matches who is being searched for, rank them FIRST regardless of score. Only include candidates who plausibly ARE this person or are very closely related. Drop anyone who is clearly unrelated.`
+          : '';
+
         const assessPrompt = `You are a senior technical evaluator. Write rich, specific developer assessments.
 Search context: "${userQuery}"
 ${constraints ? `Role requires: ${constraints.must.join(', ')}` : ''}
+${personRerankNote}
 
 For each developer, write a 2-3 sentence assessment that:
 1. Describes what they have actually BUILT (reference their top repos and descriptions)
@@ -507,7 +518,7 @@ Be specific — mention actual project names and what they do. Do NOT be generic
 No double quotes inside assessment strings. Use single quotes if needed.
 
 Developers:
-${JSON.stringify(top20.map(p => ({
+${JSON.stringify(topCandidates.map(p => ({
   handle: p.handle,
   name: p.name,
   bio: p.bio,
@@ -518,17 +529,30 @@ ${JSON.stringify(top20.map(p => ({
   topRepos: p.topRepos.map((r: RepoSummary) => `${r.name}: ${r.description} [${r.stars}★, ${r.language}]`),
 }))).slice(0, 9000)}
 
-Return ONLY JSON: {"assessments":[{"handle":"string","assessment":"string"}]}`;
+Return ONLY JSON: {"assessments":[{"handle":"string","assessment":"string"}]${mode === 'person' ? ',"orderedHandles":["handle1","handle2"]' : ''}}`; 
 
         let assessments: Record<string, string> = {};
+        let personOrder: string[] = [];
         try {
           const result = await callAI(assessPrompt, provider, llmKey, baseUrl, modelName);
           for (const a of (result?.assessments || [])) assessments[a.handle] = a.assessment;
+          if (mode === 'person' && result?.orderedHandles?.length) personOrder = result.orderedHandles;
         } catch (err) { console.warn('Assessment skipped:', err); }
 
-        const final = top20
+        let finalCandidates = topCandidates
           .map(p => ({ ...p, summary: assessments[p.handle] || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars across ${p.own_repos} repos.` }))
           .filter(p => p.score >= 3);
+
+        // Re-order person results by AI's identity ranking if available
+        if (mode === 'person' && personOrder.length > 0) {
+          const ordered = personOrder
+            .map(h => finalCandidates.find(p => p.handle === h))
+            .filter(Boolean) as typeof finalCandidates;
+          const rest = finalCandidates.filter(p => !personOrder.includes(p.handle));
+          finalCandidates = [...ordered, ...rest];
+        }
+
+        const final = finalCandidates;
 
         send({ type: 'done', data: final });
         controller.close();
