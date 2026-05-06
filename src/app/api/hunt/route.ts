@@ -18,6 +18,7 @@ interface ScoreBreakdown {
   relevance: number; activityRecency: number;
   codeQuality: number; profileSignal: number;
   locationMatch?: number;
+  semanticMatch?: number;
 }
 
 interface RepoSummary {
@@ -391,9 +392,17 @@ async function getYearContributions(login: string, token: string): Promise<Commi
 // LANGUAGE PROFICIENCY
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function getLanguageProficiency(login: string, repos: any[], gHeaders: HeadersInit): Promise<LanguageBar[]> {
-  // Cap at 6 repos — enough signal, 2× faster than 12
-  const targets = repos.filter(r => !r.fork).sort((a, b) => b.stargazers_count - a.stargazers_count).slice(0, 6);
+async function getLanguageProficiency(login: string, repos: any[], gHeaders: HeadersInit, selectedLangs: string[]): Promise<LanguageBar[]> {
+  const selLower = selectedLangs.map(l => l.toLowerCase());
+  
+  const targets = repos.filter(r => !r.fork).sort((a, b) => {
+    // Prioritize repos whose primary language matches the search criteria
+    const aMatch = a.language && selLower.includes(a.language.toLowerCase()) ? 1 : 0;
+    const bMatch = b.language && selLower.includes(b.language.toLowerCase()) ? 1 : 0;
+    if (aMatch !== bMatch) return bMatch - aMatch;
+    // Fallback to stars
+    return b.stargazers_count - a.stargazers_count;
+  }).slice(0, 15);
   const langBytes: Record<string, number> = {};
   await Promise.all(targets.map(async (repo) => {
     try {
@@ -405,7 +414,7 @@ async function getLanguageProficiency(login: string, repos: any[], gHeaders: Hea
   }));
   const total = Object.values(langBytes).reduce((a, b) => a + b, 0);
   if (!total) return [];
-  return Object.entries(langBytes).sort((a, b) => b[1] - a[1]).slice(0, 6)
+  return Object.entries(langBytes).sort((a, b) => b[1] - a[1]).slice(0, 8)
     .map(([name, bytes]) => ({ name, bytes, percentage: Math.round((bytes / total) * 1000) / 10 }));
 }
 
@@ -413,20 +422,25 @@ async function getLanguageProficiency(login: string, repos: any[], gHeaders: Hea
 // SCORING ENGINE
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Exact language name comparison — never fuzzy-substring.
+// "C" !== "C++", "C" !== "Objective-C". Case-insensitive exact match only.
+function langExact(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 function computeScore(
   user: any, langBars: LanguageBar[], events: any[], queryTerms: string[],
   repos: any[], constraints: { must: string[]; negative: string[] } | null, mode: string,
   locationInfo?: { canonical: string; variants: string[]; isKnown: boolean } | null,
-  companySignal?: string | null
-): { total: number; breakdown: ScoreBreakdown & { locationMatch: number } } {
-  const bd: ScoreBreakdown & { locationMatch: number } = { relevance: 0, activityRecency: 0, codeQuality: 0, profileSignal: 0, locationMatch: 0 };
+  companySignal?: string | null,
+  semanticEval?: { score: number, assessment: string }
+): { total: number; breakdown: ScoreBreakdown & { locationMatch: number, semanticMatch: number } } {
+  const bd: ScoreBreakdown & { locationMatch: number, semanticMatch: number } = { relevance: 0, activityRecency: 0, codeQuality: 0, profileSignal: 0, locationMatch: 0, semanticMatch: 0 };
   const topLangs = langBars.map(l => l.name.toLowerCase());
   const bioText = (user.bio || '').toLowerCase();
   const nameText = (user.name || user.login || '').toLowerCase();
 
   // RELEVANCE
-  // queryTerms now always contains primary + secondary language names + role words
-  // so we can match them against the dev's actual byte-weighted language list.
   const langNameSet = new Set(langBars.map(l => l.name.toLowerCase()));
   const top3Langs = topLangs.slice(0, 3);
 
@@ -436,68 +450,76 @@ function computeScore(
     bd.relevance = Math.min(40, (hits / Math.max(queryTerms.length, 1)) * 40);
 
   } else if (constraints) {
-    // Technical mode with role constraints (kernel, rust-only, etc.)
+    // Technical mode — exact language matching, no substring fuzzing
     const mustL = constraints.must.map(l => l.toLowerCase());
-    const negL = constraints.negative.map(l => l.toLowerCase().replace(/\+/g, ' '));
-    const primary = topLangs[0] || '';
-    const top3 = topLangs.slice(0, 3);
-    const primaryMatch = mustL.some(m => primary.includes(m) || m.includes(primary));
-    const top3Match = top3.some(l => mustL.some(m => l.includes(m) || m.includes(l)));
-    const primaryIsNeg = negL.some(n => primary.includes(n) || n.includes(primary));
-    const negPct = langBars.filter(l => negL.some(n => l.name.toLowerCase().includes(n))).reduce((a, l) => a + l.percentage, 0);
+    const negL  = constraints.negative.map(l => l.toLowerCase());
+    const primaryLang = topLangs[0] || '';
 
-    if (primaryIsNeg && negPct > 40) bd.relevance = Math.max(0, 8 - negPct / 10);
-    else if (primaryMatch) bd.relevance = 40;
-    else if (top3Match) bd.relevance = 26;
-    else bd.relevance = Math.min(18, topLangs.filter(l => mustL.some(m => l.includes(m))).length * 6);
+    // Negative language penalty: if their TOP language is explicitly negative, penalise hard
+    const primaryIsNeg = negL.some(n => langExact(primaryLang, n));
+    const negPct = langBars.filter(l => negL.some(n => langExact(l.name, n))).reduce((a, l) => a + l.percentage, 0);
+    if (primaryIsNeg && negPct > 40) {
+      bd.relevance = Math.max(0, 5 - Math.floor(negPct / 15));
+    } else {
+      // Score by how much of their codebase is in required languages (percentage-weighted)
+      let mustPct = 0;
+      for (const m of mustL) {
+        const bar = langBars.find(l => langExact(l.name, m));
+        mustPct += bar?.percentage || 0;
+      }
+      // Primary match: is their #1 language one of the must-list?
+      const primaryInMust = mustL.some(m => langExact(primaryLang, m));
+      const top3InMust = top3Langs.some(l => mustL.some(m => langExact(l, m)));
 
-    bd.relevance = Math.min(40, bd.relevance + queryTerms.filter(t => bioText.includes(t)).length * 3);
+      if (primaryInMust)       bd.relevance = Math.min(40, 28 + Math.min(12, mustPct / 10));
+      else if (top3InMust)     bd.relevance = Math.min(40, 16 + Math.min(12, mustPct / 10));
+      else                     bd.relevance = Math.min(12, mustPct / 5);
+
+      // Bio keyword bonus — only role words, not language names (already scored above)
+      const roleTerms = queryTerms.filter(t => !mustL.includes(t) && !negL.includes(t));
+      bd.relevance = Math.min(40, bd.relevance + roleTerms.filter(t => bioText.includes(t)).length * 2);
+    }
 
   } else {
-    // Open / multi-language mode (e.g. "rust devs who know C", "react with typescript")
-    // Primary language (first in queryTerms list) is worth most: 30 pts
-    // Each secondary language they also know: +5 pts each, up to 10
-    // Bio keyword matches: +2 pts each, up to 5
-    const langTerms = queryTerms.filter(t => langNameSet.has(t) ||
-      langBars.some(l => l.name.toLowerCase() === t || t.includes(l.name.toLowerCase())));
+    // Open / multi-language mode
+    // Use EXACT language name matching — never substring
+    const langTerms = queryTerms.filter(t => langNameSet.has(t));
     const roleTerms = queryTerms.filter(t => !langTerms.includes(t));
-
     const primaryLangTerm = langTerms[0] || '';
     const secondaryLangTerms = langTerms.slice(1);
 
-    // Primary language match: find it in their top 3 by bytes
-    const primaryLangPct = langBars.find(l => l.name.toLowerCase() === primaryLangTerm)?.percentage || 0;
-    const primaryScore = primaryLangTerm
-      ? (top3Langs.some(l => l.includes(primaryLangTerm) || primaryLangTerm.includes(l)) ? 30 : primaryLangPct > 5 ? 15 : 0)
-      : 20; // No primary lang specified → open query, give partial credit
+    // Primary: percentage-weighted score (40 → 0)
+    const primaryBar = langBars.find(l => langExact(l.name, primaryLangTerm));
+    const primaryPct = primaryBar?.percentage || 0;
+    const primaryRank = primaryBar ? langBars.indexOf(primaryBar) : 99;
+    const primaryScore = !primaryLangTerm ? 20  // no lang specified → open query
+      : primaryPct >= 30 ? 32
+      : primaryPct >= 15 ? 26
+      : primaryPct >= 5  ? 18
+      : primaryPct >= 1  ? 8
+      : 0;
 
-    // Secondary lang bonus: they know it at all (any %) = +5 per lang
-    const secondaryScore = Math.min(10, secondaryLangTerms.filter(t =>
-      langBars.some(l => l.name.toLowerCase() === t || t.includes(l.name.toLowerCase()))
-    ).length * 5);
+    // Rank bonus: if it's their #1 or #2 language
+    const rankBonus = primaryRank === 0 ? 8 : primaryRank === 1 ? 4 : 0;
 
-    // Bio/role keyword bonus
-    const bioScore = Math.min(5, roleTerms.filter(t => bioText.includes(t)).length * 2);
+    // Secondary: 4 pts each, capped at 8
+    const secondaryScore = Math.min(8, secondaryLangTerms.filter(t => {
+      const bar = langBars.find(l => langExact(l.name, t));
+      return bar && bar.percentage >= 1;
+    }).length * 4);
 
-    // Penalty if their codebase has NONE of the requested languages
-    const hasAnyRequestedLang = langTerms.length === 0 || langTerms.some(t =>
-      langBars.some(l => l.name.toLowerCase() === t)
-    );
-    const zeroLangPenalty = hasAnyRequestedLang ? 0 : -10;
-
-    bd.relevance = Math.min(40, Math.max(0, primaryScore + secondaryScore + bioScore + zeroLangPenalty));
+    const bioScore = Math.min(4, roleTerms.filter(t => bioText.includes(t)).length * 2);
+    bd.relevance = Math.min(40, Math.max(0, primaryScore + rankBonus + secondaryScore + bioScore));
   }
 
-  // COMPANY MATCH BONUS — if user's company field or bio mentions the target company
+  // COMPANY MATCH BONUS
   if (companySignal && mode !== 'person') {
     const cLower = companySignal.toLowerCase();
     const profileText = [(user.company || ''), (user.bio || ''), (user.login || '')].join(' ').toLowerCase();
-    if (profileText.includes(cLower)) {
-      bd.relevance = Math.min(40, bd.relevance + 12);
-    }
+    if (profileText.includes(cLower)) bd.relevance = Math.min(40, bd.relevance + 12);
   }
 
-  // ACTIVITY RECENCY
+  // ACTIVITY RECENCY (30 pts)
   const now = Date.now();
   const ev90 = events.filter(e => ['PushEvent','PullRequestEvent','CreateEvent'].includes(e.type) && new Date(e.created_at).getTime() > now - 90*86400000);
   const ev180 = events.filter(e => ['PushEvent','PullRequestEvent'].includes(e.type) && new Date(e.created_at).getTime() > now - 180*86400000);
@@ -505,100 +527,34 @@ function computeScore(
   const repos365 = repos.filter(r => !r.fork && new Date(r.pushed_at).getTime() > now - 365*86400000).length;
   bd.activityRecency = Math.min(30, Math.min(20, Math.log10(Math.max(cnt90,1)+1)*10) + Math.min(7, repos365*1.2) + (ev180.length > ev90.length*1.2 ? 3 : 0));
 
-  // CODE QUALITY
+  // CODE QUALITY (20 pts)
   const own = repos.filter(r => !r.fork);
   const stars = own.reduce((a, r) => a + (r.stargazers_count || 0), 0);
   const forks = own.reduce((a, r) => a + (r.forks_count || 0), 0);
   bd.codeQuality = Math.min(20, Math.min(15, Math.log10(Math.max(stars,1))*5) + Math.min(5, Math.log10(Math.max(forks,1))*3));
 
-  // PROFILE SIGNAL
+  // PROFILE SIGNAL (10 pts)
   let pts = 0;
   if (user.email) pts += 3;
   if (user.bio?.length > 20) pts += 2;
   if (user.blog) pts += 2;
   if (user.twitter_username) pts += 1;
-  if (user.location) pts += 1;
   if (user.name && user.name !== user.login) pts += 1;
   bd.profileSignal = Math.min(10, pts);
 
-  // ── LOCATION MATCH SCORING ──────────────────────────────────────────────────
-  // This is the critical fix: if a location was searched, it must affect ranking.
-  // A dev in Osaka scoring 94 should NOT beat a dev in Odisha scoring 80.
-  // Location match adds a bonus; wrong continent/country adds a big penalty.
-  if (locationInfo && mode !== 'person') {
-    const userLoc = (user.location || '').toLowerCase();
-    const searchLoc = locationInfo.canonical.toLowerCase();
-    const allVariants = locationInfo.variants.map(v => v.toLowerCase());
+  // LOCATION: pure filter — no points up or down in score
+  bd.locationMatch = 0;
 
-    // Check if user location contains any of our search location variants
-    const exactMatch = allVariants.some(v => userLoc.includes(v) || v.includes(userLoc));
-    // Broader country-level match (India for UP/Odisha, Germany for Berlin, etc.)
-    const countryHints: Record<string, string[]> = {
-      // India — any Indian city/state should match "india"
-      india: ['india','delhi','mumbai','bangalore','bengaluru','hyderabad','chennai','kolkata',
-              'pune','ahmedabad','jaipur','lucknow','kanpur','nagpur','indore','bhopal',
-              'patna','agra','surat','kochi','coimbatore','vizag','guwahati','chandigarh',
-              'noida','gurgaon','gurugram','faridabad','thane','navi mumbai','mangalore',
-              'mangaluru','mysore','mysuru','hubli','belgaum','manipal','udupi',
-              'uttar pradesh','up','odisha','orissa','rajasthan','bihar','jharkhand',
-              'madhya pradesh','gujarat','maharashtra','karnataka','kerala','tamil nadu',
-              'andhra','telangana','west bengal','assam','punjab','haryana'],
-      usa: ['usa','united states','america','california','texas','new york','washington',
-            'massachusetts','illinois','colorado','georgia','florida','virginia','oregon'],
-      uk: ['uk','united kingdom','england','scotland','wales','london','manchester','birmingham'],
-      germany: ['germany','deutschland','berlin','munich','hamburg','frankfurt','cologne'],
-      canada: ['canada','toronto','vancouver','montreal','ottawa','calgary'],
-      australia: ['australia','sydney','melbourne','brisbane','perth'],
-      japan: ['japan','tokyo','osaka','kyoto','nagoya'],
-      china: ['china','beijing','shanghai','shenzhen','guangzhou'],
-      brazil: ['brazil','são paulo','rio de janeiro','brasília'],
-      france: ['france','paris','lyon','marseille'],
-      netherlands: ['netherlands','amsterdam','rotterdam'],
-      singapore: ['singapore'],
-      'south korea': ['south korea','korea','seoul','busan'],
-      pakistan: ['pakistan','karachi','lahore','islamabad'],
-      bangladesh: ['bangladesh','dhaka'],
-      'sri lanka': ['sri lanka','colombo'],
-    };
-
-    // Determine what country the SEARCH location belongs to
-    let searchCountry = '';
-    for (const [country, hints] of Object.entries(countryHints)) {
-      if (hints.some(h => searchLoc.includes(h) || allVariants.some(v => v.includes(h) || h.includes(v)))) {
-        searchCountry = country;
-        break;
-      }
-    }
-
-    // Determine what country the USER is in
-    let userCountry = '';
-    for (const [country, hints] of Object.entries(countryHints)) {
-      if (hints.some(h => userLoc.includes(h))) {
-        userCountry = country;
-        break;
-      }
-    }
-
-    if (exactMatch) {
-      // Location confirmed — no bonus, just no penalty.
-      // Location is a filter signal, not a merit signal.
-      bd.locationMatch = 0;
-    } else if (searchCountry && userCountry && searchCountry === userCountry) {
-      // Same country, wrong city — no bonus, no penalty (could still be relevant)
-      bd.locationMatch = 0;
-    } else if (searchCountry && userCountry && searchCountry !== userCountry) {
-      // Wrong country entirely — heavy penalty
-      bd.locationMatch = -20;
-    } else if (!user.location) {
-      // No location set — neutral (could be anywhere)
-      bd.locationMatch = 0;
-    } else {
-      // Location set but unrecognized region — small penalty
-      bd.locationMatch = -5;
-    }
+  // SEMANTIC MATCH (NEW)
+  if (semanticEval) {
+    bd.semanticMatch = (semanticEval.score / 100) * 30; // 30 pts for pure semantic repo match
+    bd.relevance = bd.relevance * 0.25; // max 10 pts for basic keyword relevance
+  } else {
+    bd.semanticMatch = bd.relevance; // fallback if AI fails
+    bd.relevance = 0;
   }
 
-  const rawTotal = bd.relevance + bd.activityRecency + bd.codeQuality + bd.profileSignal + bd.locationMatch;
+  const rawTotal = bd.relevance + bd.semanticMatch + bd.activityRecency + bd.codeQuality + bd.profileSignal;
   return { total: Math.max(0, Math.round(rawTotal)), breakdown: bd };
 }
 
@@ -618,6 +574,64 @@ function getTopRepoSummaries(repos: any[]): RepoSummary[] {
       language: r.language,
       topics: r.topics?.slice(0, 4) || [],
     }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEMANTIC SEARCH EVALUATOR
+// Reverse-engineers advanced semantic algorithms by using LLM to score how well
+// a developer's actual project repositories align with the deeply parsed query intent.
+// ─────────────────────────────────────────────────────────────────────────────
+async function evaluateSemanticMatch(
+  query: string, 
+  candidates: any[], 
+  provider: string, 
+  key: string, 
+  baseUrl?: string, 
+  modelName?: string,
+  mode?: string
+): Promise<{ evals: Record<string, {score: number, assessment: string}>, orderedHandles?: string[] }> {
+  if (!candidates.length) return { evals: {} };
+  
+  const personRerankNote = mode === 'person'
+          ? `\nIMPORTANT: The user is searching for a specific person ("${query}"). Rank the exact matched person first in orderedHandles.`
+          : '';
+
+  const prompt = `You are an elite technical recruiter AI (a semantic search engine).
+Your goal is to evaluate developers based on their actual project experience, repositories, and technical background.
+We need to find candidates who have deep, niche expertise aligning with this search intent: "${query}"${personRerankNote}
+
+For each developer, rate their semantic alignment to the intent on a scale of 0 to 100.
+- 85-100: Built projects directly related to the niche (e.g., asked for 'blockchain indexing' and they have an open source indexer).
+- 60-84: Has highly relevant skills and adjacent projects.
+- 30-59: Uses the required languages but projects are generic.
+- 0-29: Unrelated projects or insufficient data.
+
+Provide a 2-3 sentence 'assessment' for each:
+1. Describe what they have actually BUILT (reference specific repo names and what they do).
+2. Assess their technical depth and fit for the search query.
+Do NOT be generic. Mention actual project names.
+
+Candidates:
+${JSON.stringify(candidates.map(c => ({
+  handle: c.user.login,
+  name: c.user.name,
+  bio: c.user.bio,
+  company: c.user.company,
+  topRepos: getTopRepoSummaries(c.repos).map(r => r.name + ': ' + r.description + ' [' + (r.topics || []).join(',') + ']')
+}))).slice(0, 30000)}
+
+Return ONLY JSON:
+{"evaluations": [{"handle": "username", "score": 85, "assessment": "Built X..."}]${mode === 'person' ? ',"orderedHandles":["handle1","handle2"]' : ''}}`;
+
+  try {
+    const result = await callAI(prompt, provider, key, baseUrl, modelName);
+    const evals: Record<string, {score: number, assessment: string}> = {};
+    for (const e of (result?.evaluations || [])) evals[e.handle] = { score: e.score, assessment: e.assessment };
+    return { evals, orderedHandles: result?.orderedHandles };
+  } catch (err) {
+    console.warn('Semantic evaluation failed:', err);
+    return { evals: {} };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -681,23 +695,37 @@ function buildDeterministicQueries(params: {
 
   const queries: string[] = [];
 
-  // q1: city + primary language (most specific)
-  if (primaryLoc && langFilter) {
-    queries.push(`location:"${primaryLoc}" ${langFilter} type:user ${negFilter}`.trim());
-  }
-  // q2: state/country + primary language
-  if (secondaryLoc && langFilter) {
-    queries.push(`location:"${secondaryLoc}" ${langFilter} type:user ${negFilter}`.trim());
-  }
-  // q3: city + secondary language OR just city if no secondary
-  if (primaryLoc) {
-    const secLang = secondaryLangs[0] ? `language:"${secondaryLangs[0]}"` : langFilter;
-    queries.push(`location:"${primaryLoc}" ${secLang} type:user`.trim());
-  }
-  // q4: language only (no location — catches devs who don't set location)
-  if (langFilter) {
-    const secFilter = secondaryLangs.map(l => `language:"${l}"`).join(' ');
-    queries.push(`${langFilter} ${secFilter} type:user ${negFilter}`.trim());
+  // When location is given, ONLY generate location-anchored queries.
+  // Never add a skill-only fallback — that is the #1 cause of wrong-city devs appearing.
+  if (locationParts.length > 0) {
+    // Use Bangalore LOCATION_ALIASES if we recognise the city, else use what the user typed
+    const cityVariants: string[] = [];
+    for (const [, aliases] of Object.entries(LOCATION_ALIASES)) {
+      if (aliases.some(a => locationParts.some(lp => lp.toLowerCase() === a || a.includes(lp.toLowerCase())))) {
+        cityVariants.push(...aliases.slice(0, 4));
+        break;
+      }
+    }
+    // Fallback: just use what the user typed
+    if (cityVariants.length === 0) cityVariants.push(...locationParts);
+
+    // Generate one query per (city variant × primary language), capped at 6 queries
+    const locQueries: string[] = [];
+    for (const locV of cityVariants.slice(0, 3)) {
+      if (langFilter) locQueries.push(`location:"${locV}" ${langFilter} type:user`.trim());
+      for (const secL of secondaryLangs) {
+        locQueries.push(`location:"${locV}" language:"${secL}" type:user`.trim());
+      }
+    }
+    queries.push(...locQueries.slice(0, 8));
+  } else {
+    // No location — pure skill search
+    if (langFilter) {
+      queries.push(`${langFilter} type:user`.trim());
+      for (const secL of secondaryLangs) {
+        queries.push(`language:"${secL}" type:user`.trim());
+      }
+    }
   }
   // Ensure at least 1 query
   if (queries.length === 0) {
@@ -737,16 +765,23 @@ export async function POST(req: Request) {
         // ── DETERMINISTIC MODE: bypass AI for query generation ──────────────
         if (body.searchMode === 'deterministic') {
           const { jobProfile, languages, country, state, city } = body;
+          if (country === undefined && state === undefined && city === undefined) {
+             send({ type: 'error', message: 'CRITICAL ERROR: Your browser is running a stale version of LibreHire. Please do a HARD REFRESH (Ctrl+Shift+R or Cmd+Shift+R).' });
+             controller.close(); return;
+          }
           const displayLabel = [jobProfile, city || state || country].filter(Boolean).join(' · ');
           send({ type: 'progress', step: 1, total: 6, label: `Building targeted queries for: ${displayLabel}` });
 
           const { queries, queryTerms, constraints, locationInfo } = buildDeterministicQueries({ jobProfile, languages: languages || [], country: country || '', state: state || '', city: city || '' });
+          require('fs').writeFileSync('debug.json', JSON.stringify({ jobProfile, languages, country, state, city, queries, locationInfo }, null, 2));
+          console.log('[DEBUG] deterministic request received:', { jobProfile, languages, country, state, city });
+          console.log('[DEBUG] queries generated:', queries);
 
           // Jump directly to Stage 2 (skip AI call)
           send({ type: 'progress', step: 2, total: 6, label: `Running ${queries.length} precision searches...` });
           const searchResults = await Promise.all(
             queries.map((q: string) =>
-              fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=20&sort=repositories&order=desc`, { headers: gHeaders })
+              fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=100`, { headers: gHeaders })
                 .then(r => r.json()).catch(() => ({ items: [] }))
             )
           );
@@ -754,7 +789,7 @@ export async function POST(req: Request) {
           const uniqueItems: any[] = [];
           for (const data of searchResults) {
             for (const item of (data.items || [])) {
-              if (item.type === 'User' && !seenIds.has(item.id) && uniqueItems.length < 40) {
+              if (item.type === 'User' && !seenIds.has(item.id) && uniqueItems.length < 60) {
                 seenIds.add(item.id); uniqueItems.push(item);
               }
             }
@@ -786,34 +821,74 @@ export async function POST(req: Request) {
             enriched.push(...res.filter(Boolean));
           }
 
-          // ── LOCATION PRE-FILTER (same as open-ended path) ────────────────────
+          // ── ULTRA-STRICT LOCATION FILTER ─────────────────────────────────────
+          // If a location is requested, the developer MUST explicitly have a matching location.
+          // No guessing, no falling back to "unknown" locations or other countries.
           let detPool = enriched;
           let detQuality = 'good';
           if (locationInfo) {
             const allV = locationInfo.variants.map(v => v.toLowerCase());
-            const locMatch = enriched.filter(({ user }) => {
+            const canonical = locationInfo.canonical.toLowerCase();
+
+            detPool = enriched.filter(({ user }) => {
               const uLoc = (user.location || '').toLowerCase();
-              if (!uLoc) return true;
-              return allV.some(v => uLoc.includes(v) || v.includes(uLoc)) ||
-                     uLoc.includes(locationInfo.canonical.toLowerCase());
+              if (!uLoc) return false; // Strict: if we want Bangalore, blank location is a NO.
+
+              // 1. Direct match on city variants
+              if (allV.some(v => uLoc.includes(v) || v.includes(uLoc))) return true;
+              if (uLoc.includes(canonical)) return true;
+
+              // 2. State/Country context matching
+              // If we asked for India, it's fine if they say "Mumbai".
+              // But if we asked for Bangalore, "Mumbai" is WRONG.
+              const COUNTRY_MAP: Record<string, string[]> = {
+                india: ['india','karnataka','maharashtra','telangana','tamil nadu','kerala',
+                        'gujarat','rajasthan','delhi','ncr','bihar','uttarakhand','odisha',
+                        'west bengal','punjab','haryana','assam','up','uttar pradesh',
+                        'bangalore','bengaluru','mumbai','hyderabad','chennai','pune',
+                        'ahmedabad','jaipur','kochi','chandigarh','noida','gurgaon','gurugram'],
+                usa:   ['usa','united states','america','california','new york','texas',
+                        'washington','illinois','georgia','florida','virginia','oregon','colorado',
+                        'san francisco', 'sf', 'bay area', 'seattle', 'boston', 'chicago', 'austin'],
+                uk:    ['uk','united kingdom','england','scotland','wales','london'],
+                germany: ['germany','deutschland','berlin','munich'],
+                canada:  ['canada','toronto','vancouver'],
+              };
+
+              // If the search was explicitly for a country (e.g. "India"), allow any city in that country.
+              for (const [country, hints] of Object.entries(COUNTRY_MAP)) {
+                const searchIsCountry = allV.includes(country);
+                if (searchIsCountry) {
+                  if (hints.some(h => uLoc.includes(h))) return true;
+                }
+              }
+
+              return false; // Did not match requested location
             });
-            if (locMatch.length >= 3) {
-              detPool = locMatch;
-            } else {
-              detQuality = locMatch.length === 0 ? 'none' : 'partial';
+
+            if (detPool.length === 0) {
+              send({ type: 'error', message: `No developers found strictly matching ${locationInfo.canonical} and your tech stack. Try expanding the location.` });
+              controller.close(); return;
             }
           }
 
-          send({ type: 'progress', step: 4, total: 6, label: `Analysing ${detPool.length} candidates...` });
-          const withLangs = await Promise.all(
-            detPool.map(async ({ user, repos, events }) => {
-              const langBars = await getLanguageProficiency(user.login, repos, gHeaders);
-              return { user, repos, events, langBars };
-            })
-          );
-          send({ type: 'progress', step: 5, total: 6, label: `Scoring ${withLangs.length} candidates...` });
+          send({ type: 'progress', step: 4, total: 5, label: `Semantic Analysis of ${detPool.length} candidates...` });
+          const userQuery = [jobProfile, (languages || []).join('+'), city || state || country].filter(Boolean).join(' ');
+
+          const [withLangs, semanticRes] = await Promise.all([
+            Promise.all(
+              detPool.map(async ({ user, repos, events }) => {
+                const langBars = await getLanguageProficiency(user.login, repos, gHeaders, languages || []);
+                return { user, repos, events, langBars };
+              })
+            ),
+            evaluateSemanticMatch(userQuery, detPool, provider, llmKey, baseUrl, modelName, 'technical')
+          ]);
+
+          send({ type: 'progress', step: 5, total: 5, label: `Scoring ${withLangs.length} candidates...` });
           const scored = withLangs.map(({ user, repos, events, langBars }) => {
-            const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, 'technical', locationInfo);
+            const evalRes = semanticRes.evals[user.login];
+            const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, 'technical', locationInfo, null, evalRes);
             const own = repos.filter((r: any) => !r.fork);
             return {
               handle: user.login, name: user.name || user.login, avatar: user.avatar_url,
@@ -823,7 +898,7 @@ export async function POST(req: Request) {
               contactDetails: extractContactDetails(user), languages: langBars,
               proficientLanguages: langBars.slice(0, 3).map((l: LanguageBar) => l.name),
               commitCalendar: [] as CommitDay[], topRepos: getTopRepoSummaries(repos),
-              score: total, scoreBreakdown: breakdown, summary: '', accountCreated: user.created_at,
+              score: total, scoreBreakdown: breakdown, summary: evalRes?.assessment || '', accountCreated: user.created_at,
             };
           });
 
@@ -834,50 +909,46 @@ export async function POST(req: Request) {
           const mustFromConstraints = (constraints?.must || []).map((l: string) => l.toLowerCase());
           const allSel = selLangs.length > 0 ? selLangs : mustFromConstraints;
 
+          // Exact language name match — "C" must NOT equal "C++"
           const matchPct = (langBars: LanguageBar[], lang: string, minPct: number) =>
-            langBars.some(l =>
-              (l.name.toLowerCase() === lang ||
-               l.name.toLowerCase().replace(/[+#]/g,'') === lang.replace(/[+#]/g,'')) &&
-              l.percentage >= minPct
-            );
+            langBars.some(l => langExact(l.name, lang) && l.percentage >= minPct);
 
           const getDetTier = (p: typeof scored[0]): { tier: 'full'|'primary'|'none'; missingLangs: string[] } => {
             if (allSel.length === 0) return { tier: 'full', missingLangs: [] };
             const primary = allSel[0];
             const secondaries = allSel.slice(1);
-            const hasPrimary = matchPct(p.languages, primary, 5);   // 5% min for primary
-            const missSec = secondaries.filter((s: string) => !matchPct(p.languages, s, 2)); // 2% min secondary
-            if (hasPrimary && missSec.length === 0) return { tier: 'full', missingLangs: [] };
-            if (hasPrimary) return { tier: 'primary', missingLangs: missSec };
-            return { tier: 'none', missingLangs: [primary, ...missSec].filter(Boolean) };
+            
+            // For Systems/Kernel, they MUST have the primary language at a high percentage (e.g. >= 5%).
+            const hasPrimary = matchPct(p.languages, primary, 5);
+            if (!hasPrimary) return { tier: 'none', missingLangs: allSel };
+
+            const missSec = secondaries.filter((s: string) => !matchPct(p.languages, s, 2));
+            if (missSec.length === 0) return { tier: 'full', missingLangs: [] };
+            return { tier: 'primary', missingLangs: missSec };
           };
 
           const detSorted = scored.sort((a, b) => b.score - a.score);
           const detFull    = detSorted.filter(p => getDetTier(p).tier === 'full').map(p => ({ ...p, matchTier: 'full'    as const, missingLangs: [] as string[] }));
           const detPartial = detSorted.filter(p => getDetTier(p).tier === 'primary').map(p => ({ ...p, matchTier: 'primary' as const, missingLangs: getDetTier(p).missingLangs }));
-          const detNear    = detSorted.filter(p => getDetTier(p).tier === 'none').map(p => ({ ...p, matchTier: 'none'    as const, missingLangs: getDetTier(p).missingLangs }));
+          
+          // STRICT STACK ALIGNMENT: We explicitly drop tier 'none' (those who lack the primary language).
+          // We'd rather return 2 highly qualified engineers than 20 frontend devs.
+          const detPresorted = [...detFull, ...detPartial].slice(0, 20);
+          
+          if (detPresorted.length === 0) {
+            send({ type: 'error', message: 'No developers found who meet the strict language requirements (≥5% primary codebase). Try removing some secondary languages.' });
+            controller.close(); return;
+          }
 
-          if (allSel.length > 0 && detFull.length === 0 && detPartial.length === 0) detQuality = 'none';
-          else if (allSel.length > 0 && detFull.length < 3 && detQuality === 'good') detQuality = 'partial';
-
-          const detPresorted = [...detFull, ...detPartial, ...detNear].slice(0, 20);
           await Promise.all(detPresorted.slice(0, 15).map(async (p) => { p.commitCalendar = await getYearContributions(p.handle, token); }));
           const topCandidates = detPresorted;
 
-          send({ type: 'progress', step: 6, total: 6, label: 'AI writing assessments...' });
-          const userQuery = [jobProfile, (languages || []).join('+'), city || state || country].filter(Boolean).join(' ');
-          let assessments: Record<string, string> = {};
-          try {
-            const ap = `You are a senior technical evaluator. Write 2-3 sentence assessments for each developer below. Reference their actual projects and languages. Search context: "${userQuery}"
-Developers: ${JSON.stringify(topCandidates.slice(0,9).map(p => ({ handle:p.handle, bio:p.bio, languages:p.languages.slice(0,4).map((l:LanguageBar)=>`${l.name}(${l.percentage}%)`).join(', '), stars:p.stars, topRepos:p.topRepos.map((r:RepoSummary)=>`${r.name}: ${r.description}`) })))}
-Return ONLY JSON: {"assessments":[{"handle":"string","assessment":"string"}]}`;
-            const result = await callAI(ap, provider, llmKey, baseUrl, modelName);
-            for (const a of (result?.assessments || [])) assessments[a.handle] = a.assessment;
-          } catch (err) { console.warn('Assessment skipped:', err); }
           const final = topCandidates
-            .map(p => ({ ...p, summary: assessments[p.handle] || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars.` }))
+            .map(p => ({ ...p, summary: p.summary || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars.` }))
             .filter(p => p.score >= 3);
           send({ type: 'done', data: final, searchQuality: detQuality, locationFiltered: !!locationInfo });
+          controller.close();
+          return;
         }
 
         // ── OPEN-ENDED / PERSON SEARCH (original path) ─────────────────────
@@ -1060,22 +1131,26 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
           }
         }
 
-        // ── STAGE 4: LANGUAGE PROFICIENCY (deferred calendar) ────────────────
-        send({ type: 'progress', step: 4, total: 6, label: `Analysing ${candidatePool.length} candidates...` });
+        // ── STAGE 4: SEMANTIC PROJECT ANALYSIS & LANGUAGE PROFICIENCY ────────────────
+        send({ type: 'progress', step: 4, total: 5, label: `Semantic Analysis of ${candidatePool.length} candidates...` });
 
-        const withLangs = await Promise.all(
-          candidatePool.map(async ({ user, repos, events }) => {
-            const langBars = await getLanguageProficiency(user.login, repos, gHeaders);
-            return { user, repos, events, langBars };
-          })
-        );
+        const [withLangs, semanticRes] = await Promise.all([
+          Promise.all(
+            candidatePool.map(async ({ user, repos, events }) => {
+              const langBars = await getLanguageProficiency(user.login, repos, gHeaders, langInfo.primary ? [langInfo.primary, ...langInfo.secondary] : []);
+              return { user, repos, events, langBars };
+            })
+          ),
+          evaluateSemanticMatch(userQuery, candidatePool, provider, llmKey, baseUrl, modelName, mode)
+        ]);
 
-        // ── STAGE 5: SCORING ───────────────────────────────────────────────
-        send({ type: 'progress', step: 5, total: 6, label: `Scoring ${withLangs.length} candidates...` });
+        // ── STAGE 5: SCORING & RANKING ───────────────────────────────────────────────
+        send({ type: 'progress', step: 5, total: 5, label: `Scoring ${withLangs.length} candidates...` });
 
         const effectiveCompanyForScore = (companySignal || extractImpliedCompany(userQuery)) ?? null;
         const scored = withLangs.map(({ user, repos, events, langBars }) => {
-          const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, mode, locationInfo, effectiveCompanyForScore);
+          const evalRes = semanticRes.evals[user.login];
+          const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, mode, locationInfo, effectiveCompanyForScore, evalRes);
           const own = repos.filter((r: any) => !r.fork);
           return {
             handle: user.login,
@@ -1094,7 +1169,7 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
             topRepos: getTopRepoSummaries(repos),
             score: total,
             scoreBreakdown: breakdown,
-            summary: '',
+            summary: evalRes?.assessment || '',
             accountCreated: user.created_at,
           };
         });
@@ -1147,63 +1222,17 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
         await Promise.all(top15.map(async (p) => {
           p.commitCalendar = await getYearContributions(p.handle, token);
         }));
-        const topCandidates = presorted;
-
-
-        // ── STAGE 6: RICH AI ASSESSMENT ────────────────────────────────────
-        send({ type: 'progress', step: 6, total: 6, label: `AI reviewing code output & writing assessments...` });
-
-        // For person mode: ask AI to also re-rank by identity match (name/bio/company)
-        // so the actual person always floats to the top even if their score is close.
-        const personRerankNote = mode === 'person'
-          ? `IMPORTANT: The user is searching for a specific person ("${userQuery}"). If any candidate's name, bio, or company clearly matches who is being searched for, rank them FIRST regardless of score. Only include candidates who plausibly ARE this person or are very closely related. Drop anyone who is clearly unrelated.`
-          : '';
-
-        const assessPrompt = `You are a senior technical evaluator. Write rich, specific developer assessments.
-Search context: "${userQuery}"
-${constraints ? `Role requires: ${constraints.must.join(', ')}` : ''}
-${personRerankNote}
-
-For each developer, write a 2-3 sentence assessment that:
-1. Describes what they have actually BUILT (reference their top repos and descriptions)
-2. Assesses their technical depth and activity level
-3. States their fit for the search query
-
-Be specific — mention actual project names and what they do. Do NOT be generic like "strong developer with good activity".
-No double quotes inside assessment strings. Use single quotes if needed.
-
-Developers:
-${JSON.stringify(topCandidates.map(p => ({
-  handle: p.handle,
-  name: p.name,
-  bio: p.bio,
-  company: p.company,
-  languages: p.languages.slice(0, 4).map((l: LanguageBar) => `${l.name}(${l.percentage}%)`).join(', '),
-  stars: p.stars,
-  score: p.score,
-  topRepos: p.topRepos.map((r: RepoSummary) => `${r.name}: ${r.description} [${r.stars}★, ${r.language}]`),
-}))).slice(0, 9000)}
-
-Return ONLY JSON: {"assessments":[{"handle":"string","assessment":"string"}]${mode === 'person' ? ',"orderedHandles":["handle1","handle2"]' : ''}}`; 
-
-        let assessments: Record<string, string> = {};
-        let personOrder: string[] = [];
-        try {
-          const result = await callAI(assessPrompt, provider, llmKey, baseUrl, modelName);
-          for (const a of (result?.assessments || [])) assessments[a.handle] = a.assessment;
-          if (mode === 'person' && result?.orderedHandles?.length) personOrder = result.orderedHandles;
-        } catch (err) { console.warn('Assessment skipped:', err); }
-
-        let finalCandidates = topCandidates
-          .map(p => ({ ...p, summary: assessments[p.handle] || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars across ${p.own_repos} repos.` }))
+        
+        let finalCandidates = presorted
+          .map(p => ({ ...p, summary: p.summary || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars across ${p.own_repos} repos.` }))
           .filter(p => p.score >= 3);
 
         // Re-order person results by AI's identity ranking if available
-        if (mode === 'person' && personOrder.length > 0) {
-          const ordered = personOrder
+        if (mode === 'person' && semanticRes.orderedHandles && semanticRes.orderedHandles.length > 0) {
+          const ordered = semanticRes.orderedHandles
             .map(h => finalCandidates.find(p => p.handle === h))
             .filter(Boolean) as typeof finalCandidates;
-          const rest = finalCandidates.filter(p => !personOrder.includes(p.handle));
+          const rest = finalCandidates.filter(p => !semanticRes.orderedHandles!.includes(p.handle));
           finalCandidates = [...ordered, ...rest];
         }
 
