@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, Fragment } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -190,17 +190,6 @@ function ScoreBox({ score, breakdown }: { score:number; breakdown:Record<string,
             <span className="text-[9px] font-mono text-gray-500 w-8 text-right">{Math.round(val)}</span>
           </div>
         ))}
-        {locMatch !== undefined && (
-          <div className="flex items-center gap-2 justify-end mt-0.5 pt-0.5 border-t border-gray-100">
-            <span className="text-[9px] font-mono uppercase tracking-widest text-gray-400 w-14 text-right truncate">Location</span>
-            <div className={`w-14 h-1.5 rounded-full overflow-hidden ${locMatch < 0 ? 'bg-red-100' : 'bg-gray-100'}`}>
-              {locMatch < 0 && <div className="h-full bg-red-400 rounded-full" style={{ width:'100%' }} />}
-            </div>
-            <span className={`text-[9px] font-mono w-8 text-right ${locMatch === 0 ? 'text-green-600' : 'text-red-400'}`}>
-              {locMatch === 0 ? '✓' : locMatch}
-            </span>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -899,7 +888,7 @@ export default function Home() {
                     const showPartialDivider = curTier === 'primary' && prevTier === 'full';
                     const showNearDivider    = curTier === 'none'    && prevTier !== 'none';
                     return (
-                      <>
+                      <Fragment key={p.handle}>
                         {showPartialDivider && (
                           <div key={`div-p-${i}`} className="border-t-2 border-dashed border-amber-300 pt-4 -mt-4">
                             <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-amber-600">
@@ -915,7 +904,7 @@ export default function Home() {
                           </div>
                         )}
                         <DeveloperCard key={p.handle} profile={p} rank={i+1} />
-                      </>
+                      </Fragment>
                     );
                   })}
                 </div>
