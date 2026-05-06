@@ -34,28 +34,80 @@ interface RepoSummary {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ROLE_CONSTRAINTS: Record<string, { must: string[]; negative: string[] }> = {
-  kernel:            { must: ['C','C++','Assembly','Rust'],      negative: ['JavaScript','TypeScript','Python','Java','PHP','Ruby','Go','Swift','Kotlin','Dart'] },
-  firmware:          { must: ['C','C++','Assembly','Rust','Zig'],negative: ['JavaScript','TypeScript','Python','Java','PHP','Ruby','Go','Swift','Kotlin'] },
-  embedded:          { must: ['C','C++','Assembly','Rust','Zig'],negative: ['JavaScript','TypeScript','Java','PHP','Ruby','Go','Swift','Kotlin','Dart'] },
-  systems:           { must: ['C','C++','Rust','Assembly','Zig'],negative: ['JavaScript','TypeScript','PHP','Ruby','Dart'] },
-  'low-level':       { must: ['C','C++','Assembly','Rust','Zig'],negative: ['JavaScript','TypeScript','Python','PHP','Ruby','Dart'] },
-  rust:              { must: ['Rust'],                            negative: ['JavaScript','TypeScript','PHP','Ruby','Dart'] },
-  golang:            { must: ['Go'],                             negative: ['PHP','Ruby','Dart','Assembly'] },
+  kernel:            { must: ['C','C++','Assembly','Rust'],                   negative: ['JavaScript','TypeScript','Python','Java','PHP','Ruby','Go','Swift','Kotlin','Dart','HTML','CSS'] },
+  firmware:          { must: ['C','C++','Assembly','Rust','Zig'],             negative: ['JavaScript','TypeScript','Python','Java','PHP','Ruby','Go','Swift','Kotlin','HTML','CSS'] },
+  embedded:          { must: ['C','C++','Assembly','Rust','Zig'],             negative: ['JavaScript','TypeScript','Java','PHP','Ruby','Go','Swift','Kotlin','Dart','HTML','CSS'] },
+  systems:           { must: ['C','C++','Rust','Assembly','Zig'],             negative: ['JavaScript','TypeScript','PHP','Ruby','Dart','HTML','CSS'] },
+  'low-level':       { must: ['C','C++','Assembly','Rust','Zig'],             negative: ['JavaScript','TypeScript','Python','PHP','Ruby','Dart','HTML','CSS'] },
+  rust:              { must: ['Rust'],                                         negative: ['JavaScript','TypeScript','PHP','Ruby','Dart'] },
+  golang:            { must: ['Go'],                                           negative: ['PHP','Ruby','Dart','Assembly'] },
   backend:           { must: ['Go','Rust','Python','Java','C++','C#','Ruby'], negative: ['HTML','CSS'] },
-  frontend:          { must: ['TypeScript','JavaScript'],        negative: ['C','C++','Assembly','Zig'] },
-  'machine learning':{ must: ['Python','Julia','C++'],           negative: ['PHP','Ruby','Dart','Assembly'] },
-  ml:                { must: ['Python','Julia','C++'],           negative: ['PHP','Ruby','Dart','Assembly'] },
-  ai:                { must: ['Python','Julia','C++'],           negative: ['PHP','Ruby','Dart','Assembly'] },
-  devops:            { must: ['Go','Python','Shell','HCL'],      negative: ['Assembly'] },
-  mobile:            { must: ['Swift','Kotlin','Dart'],          negative: ['Assembly'] },
-  android:           { must: ['Kotlin','Java'],                  negative: ['Swift','Assembly'] },
-  ios:               { must: ['Swift','Objective-C'],            negative: ['Kotlin','Assembly'] },
-  blockchain:        { must: ['Solidity','Rust','TypeScript'],   negative: ['Assembly','Fortran'] },
-  web3:              { must: ['Solidity','Rust','TypeScript'],   negative: ['Assembly','Fortran'] },
+  frontend:          { must: ['TypeScript','JavaScript','HTML','CSS'],        negative: ['C','C++','Assembly','Zig'] },
+  fullstack:         { must: ['TypeScript','JavaScript','Python','Go','Ruby'],negative: ['Assembly','Zig','Fortran'] },
+  'full stack':      { must: ['TypeScript','JavaScript','Python','Go','Ruby'],negative: ['Assembly','Zig','Fortran'] },
+  'machine learning':{ must: ['Python','Julia','C++'],                        negative: ['PHP','Ruby','Dart','Assembly'] },
+  ml:                { must: ['Python','Julia','C++'],                        negative: ['PHP','Ruby','Dart','Assembly'] },
+  ai:                { must: ['Python','Julia','C++'],                        negative: ['PHP','Ruby','Dart','Assembly'] },
+  'data engineer':   { must: ['Python','Scala','SQL','Go'],                   negative: ['Assembly','Zig','Fortran'] },
+  'data scientist':  { must: ['Python','R','Julia'],                          negative: ['Assembly','Zig','Fortran'] },
+  data:              { must: ['Python','R','Scala','Julia'],                  negative: ['Assembly','Zig','Fortran'] },
+  devops:            { must: ['Go','Python','Shell','HCL'],                   negative: ['Assembly'] },
+  sre:               { must: ['Go','Python','Shell','Rust'],                  negative: ['Assembly','PHP'] },
+  platform:          { must: ['Go','Python','Shell','Rust'],                  negative: ['Assembly','PHP'] },
+  security:          { must: ['Python','C','C++','Rust','Go'],               negative: ['HTML','CSS','PHP','Ruby'] },
+  'qa':              { must: ['Python','Java','TypeScript','JavaScript'],     negative: ['Assembly','Zig','Fortran','C','C++'] },
+  'quality assurance':{ must: ['Python','Java','TypeScript','JavaScript'],   negative: ['Assembly','Zig','Fortran'] },
+  testing:           { must: ['Python','Java','TypeScript','JavaScript'],     negative: ['Assembly','Zig','Fortran'] },
+  mobile:            { must: ['Swift','Kotlin','Dart'],                       negative: ['Assembly'] },
+  android:           { must: ['Kotlin','Java'],                               negative: ['Swift','Assembly'] },
+  ios:               { must: ['Swift','Objective-C'],                         negative: ['Kotlin','Assembly'] },
+  blockchain:        { must: ['Solidity','Rust','TypeScript'],               negative: ['Assembly','Fortran'] },
+  web3:              { must: ['Solidity','Rust','TypeScript'],               negative: ['Assembly','Fortran'] },
+  game:              { must: ['C++','C#','Lua','Rust'],                       negative: ['PHP','Ruby','Dart'] },
+  graphics:          { must: ['C++','Rust','GLSL','HLSL'],                   negative: ['PHP','Ruby','Dart'] },
 };
 
 // Person-search triggers: these mean "find this human", not "find devs with skill"
 const PERSON_TRIGGERS = ['founder','cto','ceo','creator','author','maintainer','lead','head of','director','built','made','who made','who created','who is','person'];
+
+// Company/employer signal words — detects "worked at Nasdaq", "working at Vercel", "ex-Google"
+const COMPANY_TRIGGERS = [
+  'worked at','works at','working at','currently at','currently working at',
+  'ex-','former','from company','at company','employed at','employed by',
+  'previously at','previously worked','joined at','from the team at',
+  'who work at','who works at',
+];
+
+// Implied company — catches "Vercel developers", "Google engineers in Delhi"
+// Pattern: ProperNoun + [role word], at start or after preposition
+const ROLE_NOUNS = ['developer','developers','engineer','engineers','dev','devs','programmer','coder','analyst','employee','team'];
+function extractImpliedCompany(query: string): string | null {
+  for (const role of ROLE_NOUNS) {
+    // Match: "Vercel developers", "Google engineers", "Stripe backend devs"
+    const re = new RegExp(`\\b([A-Z][a-zA-Z0-9]{2,20})\\s+(?:[a-z]+\\s+)?${role}\\b`, 'g');
+    const m = re.exec(query);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// Extract company name from query — "QA analyst who worked at Nasdaq" → "Nasdaq"
+function extractCompany(query: string): string | null {
+  const lower = query.toLowerCase();
+  for (const trigger of COMPANY_TRIGGERS) {
+    const idx = lower.indexOf(trigger);
+    if (idx !== -1) {
+      const after = query.slice(idx + trigger.length).trim();
+      // grab next 1-3 words as company name
+      const match = after.match(/^([A-Za-z0-9][\w&.\- ]{1,40}?)(?=\s*(?:,|\.|and|or|who|that|$))/i);
+      if (match) return match[1].trim();
+    }
+  }
+  // Also match patterns like "ex-Google", "ex-Nasdaq"
+  const exMatch = query.match(/\bex[-–]([A-Z][\w&]+)/i);
+  if (exMatch) return exMatch[1];
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DETERMINISTIC LOCATION EXTRACTOR
@@ -340,7 +392,8 @@ async function getYearContributions(login: string, token: string): Promise<Commi
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getLanguageProficiency(login: string, repos: any[], gHeaders: HeadersInit): Promise<LanguageBar[]> {
-  const targets = repos.filter(r => !r.fork).sort((a, b) => b.stargazers_count - a.stargazers_count).slice(0, 12);
+  // Cap at 6 repos — enough signal, 2× faster than 12
+  const targets = repos.filter(r => !r.fork).sort((a, b) => b.stargazers_count - a.stargazers_count).slice(0, 6);
   const langBytes: Record<string, number> = {};
   await Promise.all(targets.map(async (repo) => {
     try {
@@ -363,7 +416,8 @@ async function getLanguageProficiency(login: string, repos: any[], gHeaders: Hea
 function computeScore(
   user: any, langBars: LanguageBar[], events: any[], queryTerms: string[],
   repos: any[], constraints: { must: string[]; negative: string[] } | null, mode: string,
-  locationInfo?: { canonical: string; variants: string[]; isKnown: boolean } | null
+  locationInfo?: { canonical: string; variants: string[]; isKnown: boolean } | null,
+  companySignal?: string | null
 ): { total: number; breakdown: ScoreBreakdown & { locationMatch: number } } {
   const bd: ScoreBreakdown & { locationMatch: number } = { relevance: 0, activityRecency: 0, codeQuality: 0, profileSignal: 0, locationMatch: 0 };
   const topLangs = langBars.map(l => l.name.toLowerCase());
@@ -432,6 +486,15 @@ function computeScore(
     const zeroLangPenalty = hasAnyRequestedLang ? 0 : -10;
 
     bd.relevance = Math.min(40, Math.max(0, primaryScore + secondaryScore + bioScore + zeroLangPenalty));
+  }
+
+  // COMPANY MATCH BONUS — if user's company field or bio mentions the target company
+  if (companySignal && mode !== 'person') {
+    const cLower = companySignal.toLowerCase();
+    const profileText = [(user.company || ''), (user.bio || ''), (user.login || '')].join(' ').toLowerCase();
+    if (profileText.includes(cLower)) {
+      bd.relevance = Math.min(40, bd.relevance + 12);
+    }
   }
 
   // ACTIVITY RECENCY
@@ -517,11 +580,12 @@ function computeScore(
     }
 
     if (exactMatch) {
-      // Perfect — city/region matches exactly
-      bd.locationMatch = 25;
+      // Location confirmed — no bonus, just no penalty.
+      // Location is a filter signal, not a merit signal.
+      bd.locationMatch = 0;
     } else if (searchCountry && userCountry && searchCountry === userCountry) {
-      // Same country, different city — partial credit
-      bd.locationMatch = 10;
+      // Same country, wrong city — no bonus, no penalty (could still be relevant)
+      bd.locationMatch = 0;
     } else if (searchCountry && userCountry && searchCountry !== userCountry) {
       // Wrong country entirely — heavy penalty
       bd.locationMatch = -20;
@@ -560,6 +624,103 @@ function getTopRepoSummaries(repos: any[]): RepoSummary[] {
 // MAIN HUNT ROUTE — Server-Sent Events
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DETERMINISTIC SEARCH — structured inputs bypass the LLM for query building.
+// Accepts: jobProfile, languages (array), country, state, city
+// Builds multiple targeted GitHub search queries directly without LLM guessing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Maps UI job profile labels → ROLE_CONSTRAINTS keys
+const PROFILE_TO_ROLE: Record<string, string> = {
+  'Systems / Kernel': 'systems',
+  'Kernel / Low-Level': 'kernel',
+  'Firmware / Embedded': 'embedded',
+  'Frontend': 'frontend',
+  'Backend': 'backend',
+  'Full Stack': 'fullstack',
+  'Machine Learning / AI': 'machine learning',
+  'Data Engineer': 'data engineer',
+  'Data Scientist': 'data scientist',
+  'DevOps / SRE': 'devops',
+  'Mobile (iOS/Android)': 'mobile',
+  'iOS': 'ios',
+  'Android': 'android',
+  'Security': 'security',
+  'QA / Testing': 'qa',
+  'Blockchain / Web3': 'blockchain',
+  'Game / Graphics': 'game',
+};
+
+function buildDeterministicQueries(params: {
+  jobProfile: string;
+  languages: string[];
+  country: string;
+  state: string;
+  city: string;
+}): { queries: string[]; queryTerms: string[]; constraints: { must: string[]; negative: string[] } | null; locationInfo: { canonical: string; variants: string[]; isKnown: boolean } | null } {
+  const { jobProfile, languages, country, state, city } = params;
+
+  // Resolve role constraints
+  const roleKey = PROFILE_TO_ROLE[jobProfile] || jobProfile.toLowerCase();
+  const constraints = ROLE_CONSTRAINTS[roleKey] || null;
+
+  // Determine primary language — user-selected takes precedence over role default
+  const primaryLang = languages[0] || constraints?.must[0] || '';
+  const secondaryLangs = languages.slice(1);
+  const langFilter = primaryLang ? `language:"${primaryLang}"` : '';
+  const negFilter = constraints ? constraints.negative.map(l => `-language:"${l}"`).join(' ') : '';
+
+  // Build location strings (most specific to least specific)
+  const locationParts: string[] = [];
+  if (city) locationParts.push(city);
+  if (state) locationParts.push(state);
+  if (country) locationParts.push(country);
+
+  const primaryLoc = locationParts[0] || '';
+  const secondaryLoc = locationParts[1] || '';
+
+  const queries: string[] = [];
+
+  // q1: city + primary language (most specific)
+  if (primaryLoc && langFilter) {
+    queries.push(`location:"${primaryLoc}" ${langFilter} type:user ${negFilter}`.trim());
+  }
+  // q2: state/country + primary language
+  if (secondaryLoc && langFilter) {
+    queries.push(`location:"${secondaryLoc}" ${langFilter} type:user ${negFilter}`.trim());
+  }
+  // q3: city + secondary language OR just city if no secondary
+  if (primaryLoc) {
+    const secLang = secondaryLangs[0] ? `language:"${secondaryLangs[0]}"` : langFilter;
+    queries.push(`location:"${primaryLoc}" ${secLang} type:user`.trim());
+  }
+  // q4: language only (no location — catches devs who don't set location)
+  if (langFilter) {
+    const secFilter = secondaryLangs.map(l => `language:"${l}"`).join(' ');
+    queries.push(`${langFilter} ${secFilter} type:user ${negFilter}`.trim());
+  }
+  // Ensure at least 1 query
+  if (queries.length === 0) {
+    queries.push(`${langFilter || 'type:user'} type:user`);
+  }
+
+  // Build locationInfo for scoring
+  const canonicalLoc = city || state || country || '';
+  const locVariants = locationParts.map(l => l.toLowerCase());
+  const locationInfo = canonicalLoc
+    ? { canonical: canonicalLoc, variants: locVariants, isKnown: true }
+    : null;
+
+  // queryTerms for scoring: all selected languages + role name words
+  const queryTerms: string[] = [
+    ...languages.map(l => l.toLowerCase()),
+    ...(primaryLang && !languages.length ? [primaryLang.toLowerCase()] : []),
+    ...(jobProfile ? jobProfile.toLowerCase().split(/[\s\/]+/) : []),
+  ].filter((v, i, a) => v.length > 1 && a.indexOf(v) === i);
+
+  return { queries, queryTerms, constraints, locationInfo };
+}
+
 export async function POST(req: Request) {
   const encode = makeEncoder();
 
@@ -568,21 +729,170 @@ export async function POST(req: Request) {
       const send = (msg: object) => { try { controller.enqueue(encode(msg)); } catch { /* closed */ } };
 
       try {
-        const { userQuery, provider, llmKey, githubToken, baseUrl, modelName } = await req.json();
+        const body = await req.json();
+        const { provider, llmKey, githubToken, baseUrl, modelName } = body;
         const gHeaders: HeadersInit = { Authorization: `token ${githubToken}`, 'X-GitHub-Api-Version': '2022-11-28' };
         const token = githubToken;
 
+        // ── DETERMINISTIC MODE: bypass AI for query generation ──────────────
+        if (body.searchMode === 'deterministic') {
+          const { jobProfile, languages, country, state, city } = body;
+          const displayLabel = [jobProfile, city || state || country].filter(Boolean).join(' · ');
+          send({ type: 'progress', step: 1, total: 6, label: `Building targeted queries for: ${displayLabel}` });
+
+          const { queries, queryTerms, constraints, locationInfo } = buildDeterministicQueries({ jobProfile, languages: languages || [], country: country || '', state: state || '', city: city || '' });
+
+          // Jump directly to Stage 2 (skip AI call)
+          send({ type: 'progress', step: 2, total: 6, label: `Running ${queries.length} precision searches...` });
+          const searchResults = await Promise.all(
+            queries.map((q: string) =>
+              fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=20&sort=repositories&order=desc`, { headers: gHeaders })
+                .then(r => r.json()).catch(() => ({ items: [] }))
+            )
+          );
+          const seenIds = new Set<number>();
+          const uniqueItems: any[] = [];
+          for (const data of searchResults) {
+            for (const item of (data.items || [])) {
+              if (item.type === 'User' && !seenIds.has(item.id) && uniqueItems.length < 40) {
+                seenIds.add(item.id); uniqueItems.push(item);
+              }
+            }
+          }
+          if (!uniqueItems.length) {
+            send({ type: 'error', message: 'No developers found for these filters. Try broadening location or language selection.' });
+            controller.close(); return;
+          }
+          send({ type: 'progress', step: 3, total: 6, label: `Reading ${uniqueItems.length} profiles...` });
+          const enriched: any[] = [];
+          for (let i = 0; i < uniqueItems.length; i += 12) {
+            const batch = uniqueItems.slice(i, i + 12);
+            const res = await Promise.all(batch.map(async (item) => {
+              try {
+                const [uRes, rRes, eRes] = await Promise.all([
+                  fetch(`https://api.github.com/users/${item.login}`, { headers: gHeaders }),
+                  fetch(`https://api.github.com/users/${item.login}/repos?per_page=60&sort=pushed`, { headers: gHeaders }),
+                  fetch(`https://api.github.com/users/${item.login}/events/public?per_page=60`, { headers: gHeaders }),
+                ]);
+                const [u, repos, events] = await Promise.all([
+                  uRes.ok ? uRes.json() : null,
+                  rRes.ok ? rRes.json() : [],
+                  eRes.ok ? eRes.json() : [],
+                ]);
+                if (!u || !u.public_repos) return null;
+                return { user: u, repos: Array.isArray(repos) ? repos : [], events: Array.isArray(events) ? events : [] };
+              } catch { return null; }
+            }));
+            enriched.push(...res.filter(Boolean));
+          }
+
+          // ── LOCATION PRE-FILTER (same as open-ended path) ────────────────────
+          let detPool = enriched;
+          let detQuality = 'good';
+          if (locationInfo) {
+            const allV = locationInfo.variants.map(v => v.toLowerCase());
+            const locMatch = enriched.filter(({ user }) => {
+              const uLoc = (user.location || '').toLowerCase();
+              if (!uLoc) return true;
+              return allV.some(v => uLoc.includes(v) || v.includes(uLoc)) ||
+                     uLoc.includes(locationInfo.canonical.toLowerCase());
+            });
+            if (locMatch.length >= 3) {
+              detPool = locMatch;
+            } else {
+              detQuality = locMatch.length === 0 ? 'none' : 'partial';
+            }
+          }
+
+          send({ type: 'progress', step: 4, total: 6, label: `Analysing ${detPool.length} candidates...` });
+          const withLangs = await Promise.all(
+            detPool.map(async ({ user, repos, events }) => {
+              const langBars = await getLanguageProficiency(user.login, repos, gHeaders);
+              return { user, repos, events, langBars };
+            })
+          );
+          send({ type: 'progress', step: 5, total: 6, label: `Scoring ${withLangs.length} candidates...` });
+          const scored = withLangs.map(({ user, repos, events, langBars }) => {
+            const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, 'technical', locationInfo);
+            const own = repos.filter((r: any) => !r.fork);
+            return {
+              handle: user.login, name: user.name || user.login, avatar: user.avatar_url,
+              bio: user.bio || '', location: user.location || null, company: user.company || null,
+              followers: user.followers || 0, own_repos: own.length,
+              stars: own.reduce((a: number, r: any) => a + (r.stargazers_count || 0), 0),
+              contactDetails: extractContactDetails(user), languages: langBars,
+              proficientLanguages: langBars.slice(0, 3).map((l: LanguageBar) => l.name),
+              commitCalendar: [] as CommitDay[], topRepos: getTopRepoSummaries(repos),
+              score: total, scoreBreakdown: breakdown, summary: '', accountCreated: user.created_at,
+            };
+          });
+
+          // ── THREE-TIER LANGUAGE FILTER ────────────────────────────────────────
+          // Primary language (first selected) must be ≥5% — a real primary, not a trace.
+          // Secondary languages (additional selections) must be ≥2%.
+          const selLangs = (languages || []).map((l: string) => l.toLowerCase());
+          const mustFromConstraints = (constraints?.must || []).map((l: string) => l.toLowerCase());
+          const allSel = selLangs.length > 0 ? selLangs : mustFromConstraints;
+
+          const matchPct = (langBars: LanguageBar[], lang: string, minPct: number) =>
+            langBars.some(l =>
+              (l.name.toLowerCase() === lang ||
+               l.name.toLowerCase().replace(/[+#]/g,'') === lang.replace(/[+#]/g,'')) &&
+              l.percentage >= minPct
+            );
+
+          const getDetTier = (p: typeof scored[0]): { tier: 'full'|'primary'|'none'; missingLangs: string[] } => {
+            if (allSel.length === 0) return { tier: 'full', missingLangs: [] };
+            const primary = allSel[0];
+            const secondaries = allSel.slice(1);
+            const hasPrimary = matchPct(p.languages, primary, 5);   // 5% min for primary
+            const missSec = secondaries.filter((s: string) => !matchPct(p.languages, s, 2)); // 2% min secondary
+            if (hasPrimary && missSec.length === 0) return { tier: 'full', missingLangs: [] };
+            if (hasPrimary) return { tier: 'primary', missingLangs: missSec };
+            return { tier: 'none', missingLangs: [primary, ...missSec].filter(Boolean) };
+          };
+
+          const detSorted = scored.sort((a, b) => b.score - a.score);
+          const detFull    = detSorted.filter(p => getDetTier(p).tier === 'full').map(p => ({ ...p, matchTier: 'full'    as const, missingLangs: [] as string[] }));
+          const detPartial = detSorted.filter(p => getDetTier(p).tier === 'primary').map(p => ({ ...p, matchTier: 'primary' as const, missingLangs: getDetTier(p).missingLangs }));
+          const detNear    = detSorted.filter(p => getDetTier(p).tier === 'none').map(p => ({ ...p, matchTier: 'none'    as const, missingLangs: getDetTier(p).missingLangs }));
+
+          if (allSel.length > 0 && detFull.length === 0 && detPartial.length === 0) detQuality = 'none';
+          else if (allSel.length > 0 && detFull.length < 3 && detQuality === 'good') detQuality = 'partial';
+
+          const detPresorted = [...detFull, ...detPartial, ...detNear].slice(0, 20);
+          await Promise.all(detPresorted.slice(0, 15).map(async (p) => { p.commitCalendar = await getYearContributions(p.handle, token); }));
+          const topCandidates = detPresorted;
+
+          send({ type: 'progress', step: 6, total: 6, label: 'AI writing assessments...' });
+          const userQuery = [jobProfile, (languages || []).join('+'), city || state || country].filter(Boolean).join(' ');
+          let assessments: Record<string, string> = {};
+          try {
+            const ap = `You are a senior technical evaluator. Write 2-3 sentence assessments for each developer below. Reference their actual projects and languages. Search context: "${userQuery}"
+Developers: ${JSON.stringify(topCandidates.slice(0,9).map(p => ({ handle:p.handle, bio:p.bio, languages:p.languages.slice(0,4).map((l:LanguageBar)=>`${l.name}(${l.percentage}%)`).join(', '), stars:p.stars, topRepos:p.topRepos.map((r:RepoSummary)=>`${r.name}: ${r.description}`) })))}
+Return ONLY JSON: {"assessments":[{"handle":"string","assessment":"string"}]}`;
+            const result = await callAI(ap, provider, llmKey, baseUrl, modelName);
+            for (const a of (result?.assessments || [])) assessments[a.handle] = a.assessment;
+          } catch (err) { console.warn('Assessment skipped:', err); }
+          const final = topCandidates
+            .map(p => ({ ...p, summary: assessments[p.handle] || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars.` }))
+            .filter(p => p.score >= 3);
+          send({ type: 'done', data: final, searchQuality: detQuality, locationFiltered: !!locationInfo });
+        }
+
+        // ── OPEN-ENDED / PERSON SEARCH (original path) ─────────────────────
+        const userQuery = body.userQuery || '';
         const { mode, constraints } = detectQueryMode(userQuery);
 
         // ── STAGE 1: AI QUERY GENERATION ───────────────────────────────────
         send({ type: 'progress', step: 1, total: 6, label: 'Understanding your search intent...' });
 
         // ── DETERMINISTIC PRE-PROCESSING ─────────────────────────────────────
-        // Extract location and languages from query BEFORE the LLM sees it.
-        // This prevents the LLM from misidentifying "Delhi" as Bangalore or
-        // dropping secondary language mentions like "who know C as well".
+        // Extract location, languages, AND company signals from query BEFORE the LLM.
+        // This prevents LLM misidentification and ensures all signals are preserved.
         const locationInfo = extractLocation(userQuery);
         const langInfo = extractLanguages(userQuery);
+        const companySignal = extractCompany(userQuery);
 
         // Build the primary language filter for GitHub search
         // Use constraint must-list if we have one, otherwise use extracted lang
@@ -637,18 +947,26 @@ EXTRACTED DATA:
 - Primary language: ${mustLangs[0] || 'none — infer from query context'}
 - Secondary languages: ${secondaryLangs.join(', ') || 'none'}
 - Negative filters: ${negFilter || 'none'}
+${companySignal ? `- Company/Employer signal detected: "${companySignal}" — the person may have their GitHub bio, company field, or repos referencing this employer.` : ''}
 
 Generate 4 GitHub search queries. Return ONLY JSON:
 {"queries":["q1","q2","q3","q4"],"queryTerms":["t1","t2","t3"]}
 
 RULES:
-${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter} type:user ${negFilter}
+${(companySignal && locationInfo) ? `
+COMPANY + LOCATION SEARCH — company is the PRIMARY signal, location is secondary.
+- q1: "${companySignal}" location:"${locationInfo.canonical}" type:user  (company keyword + city)
+- q2: "${companySignal}" location:"${locationInfo.variants[1] || locationInfo.canonical}" type:user  (alt city spelling)
+- q3: "${companySignal}" type:user repos:>0  (global — employer self-identifies anywhere in profile)
+- q4: ${primaryLangFilter ? `location:"${locationInfo.canonical}" ${primaryLangFilter} type:user` : `location:"${locationInfo.canonical}" type:user`}  (location+skill fallback, no company filter)
+` : locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter} type:user ${negFilter}
 - q2: Use alternate spelling/local name of the city + ${primaryLangFilter} type:user ${negFilter} (e.g. if Mangalore, try "mangaluru"; if Bangalore, try "bengaluru")
 - q3: location of the state/region + ${primaryLangFilter} type:user ${negFilter} (broader area)
-- q4: ${primaryLangFilter} ${secondaryLangs.map(l => `language:"${l}"`).join(' ')} type:user ${negFilter} (no location, skill only — catches devs who didn't set location)` 
+- q4: ${primaryLangFilter} ${secondaryLangs.map(l => `language:"${l}"`).join(' ')} type:user ${negFilter} (no location, skill only)` 
 : `- q1-q4: Skill-focused queries with different language and keyword combinations. Use in:bio for role keywords.`}
+${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain "${companySignal}" as a keyword to find devs who self-identify with this employer in bio/company/login.` : ''}
 - NEVER use a city from a different country or region than what was asked
-- queryTerms: list the primary language, secondary languages, and key role words (NO location words)`;
+- queryTerms: list the primary language, secondary languages, key role words, and the company name if one was detected (NO generic location words)`;
         }
 
         const params = await callAI(intentPrompt, provider, llmKey, baseUrl, modelName);
@@ -666,12 +984,15 @@ ${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter
           ...aiTerms.filter(t => !detectedLangTerms.includes(t.toLowerCase())),
         ];
 
+        // Also try implied company ("Vercel developers") if explicit triggers didn't fire
+        const effectiveCompany = companySignal || extractImpliedCompany(userQuery);
+
         // ── STAGE 2: GITHUB SEARCH ─────────────────────────────────────────
         send({ type: 'progress', step: 2, total: 6, label: `Running ${params.queries.length} searches on GitHub...` });
 
         const searchResults = await Promise.all(
           params.queries.map((q: string) =>
-            fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=25&sort=repositories&order=desc`, { headers: gHeaders })
+            fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=20&sort=repositories&order=desc`, { headers: gHeaders })
               .then(r => r.json()).catch(() => ({ items: [] }))
           )
         );
@@ -680,7 +1001,10 @@ ${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter
         const uniqueItems: any[] = [];
         for (const data of searchResults) {
           for (const item of (data.items || [])) {
-            if (item.type === 'User' && !seenIds.has(item.id)) { seenIds.add(item.id); uniqueItems.push(item); }
+            // Cap at 35 unique users — more than enough, keeps Stage 3 fast
+            if (item.type === 'User' && !seenIds.has(item.id) && uniqueItems.length < 35) {
+              seenIds.add(item.id); uniqueItems.push(item);
+            }
           }
         }
 
@@ -690,17 +1014,18 @@ ${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter
         }
 
         // ── STAGE 3: ENRICHMENT ────────────────────────────────────────────
-        send({ type: 'progress', step: 3, total: 6, label: `Reading ${uniqueItems.length} profiles in depth...` });
+        send({ type: 'progress', step: 3, total: 6, label: `Reading ${uniqueItems.length} profiles...` });
 
         const enriched: any[] = [];
-        for (let i = 0; i < uniqueItems.length; i += 8) {
-          const batch = uniqueItems.slice(i, i + 8);
+        // Batch 12, no inter-batch delay — GitHub rate limit is per-minute, not per-request
+        for (let i = 0; i < uniqueItems.length; i += 12) {
+          const batch = uniqueItems.slice(i, i + 12);
           const res = await Promise.all(batch.map(async (item) => {
             try {
               const [uRes, rRes, eRes] = await Promise.all([
                 fetch(`https://api.github.com/users/${item.login}`, { headers: gHeaders }),
-                fetch(`https://api.github.com/users/${item.login}/repos?per_page=100&sort=pushed`, { headers: gHeaders }),
-                fetch(`https://api.github.com/users/${item.login}/events/public?per_page=100`, { headers: gHeaders }),
+                fetch(`https://api.github.com/users/${item.login}/repos?per_page=60&sort=pushed`, { headers: gHeaders }),
+                fetch(`https://api.github.com/users/${item.login}/events/public?per_page=60`, { headers: gHeaders }),
               ]);
               const [u, repos, events] = await Promise.all([
                 uRes.ok ? uRes.json() : null,
@@ -712,27 +1037,45 @@ ${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter
             } catch { return null; }
           }));
           enriched.push(...res.filter(Boolean));
-          if (i + 8 < uniqueItems.length) await delay(150);
         }
 
-        // ── STAGE 4: LANGUAGES + 1-YEAR CALENDAR ─────────────────────────
-        send({ type: 'progress', step: 4, total: 6, label: 'Fetching full-year contribution history & language analysis...' });
+        // ── LOCATION PRE-FILTER ──────────────────────────────────────────────
+        // After enrichment we have real user.location. Filter out confirmed
+        // wrong-location devs BEFORE the expensive language/calendar fetch.
+        let candidatePool = enriched;
+        let searchQuality = 'good';
+        if (locationInfo && mode !== 'person') {
+          const allVariants = locationInfo.variants.map(v => v.toLowerCase());
+          const locMatches = enriched.filter(({ user }) => {
+            const uLoc = (user.location || '').toLowerCase();
+            if (!uLoc) return true; // unknown location → keep
+            return allVariants.some(v => uLoc.includes(v) || v.includes(uLoc)) ||
+                   uLoc.includes(locationInfo.canonical.toLowerCase());
+          });
+          if (locMatches.length >= 4) {
+            candidatePool = locMatches;
+          } else {
+            // Not enough exact matches — use all but flag as fallback
+            searchQuality = locMatches.length === 0 ? 'none' : 'partial';
+          }
+        }
+
+        // ── STAGE 4: LANGUAGE PROFICIENCY (deferred calendar) ────────────────
+        send({ type: 'progress', step: 4, total: 6, label: `Analysing ${candidatePool.length} candidates...` });
 
         const withLangs = await Promise.all(
-          enriched.map(async ({ user, repos, events }) => {
-            const [langBars, calendar] = await Promise.all([
-              getLanguageProficiency(user.login, repos, gHeaders),
-              getYearContributions(user.login, token),
-            ]);
-            return { user, repos, events, langBars, calendar };
+          candidatePool.map(async ({ user, repos, events }) => {
+            const langBars = await getLanguageProficiency(user.login, repos, gHeaders);
+            return { user, repos, events, langBars };
           })
         );
 
         // ── STAGE 5: SCORING ───────────────────────────────────────────────
         send({ type: 'progress', step: 5, total: 6, label: `Scoring ${withLangs.length} candidates...` });
 
-        const scored = withLangs.map(({ user, repos, events, langBars, calendar }) => {
-          const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, mode, locationInfo);
+        const effectiveCompanyForScore = (companySignal || extractImpliedCompany(userQuery)) ?? null;
+        const scored = withLangs.map(({ user, repos, events, langBars }) => {
+          const { total, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, mode, locationInfo, effectiveCompanyForScore);
           const own = repos.filter((r: any) => !r.fork);
           return {
             handle: user.login,
@@ -747,7 +1090,7 @@ ${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter
             contactDetails: extractContactDetails(user),
             languages: langBars,
             proficientLanguages: langBars.slice(0, 3).map((l: LanguageBar) => l.name),
-            commitCalendar: calendar,
+            commitCalendar: [] as CommitDay[], // populated below for top-15 only
             topRepos: getTopRepoSummaries(repos),
             score: total,
             scoreBreakdown: breakdown,
@@ -756,11 +1099,56 @@ ${locationInfo ? `- q1: location:"${locationInfo.canonical}" ${primaryLangFilter
           };
         });
 
-        // For person searches: cap to top 3 only — showing 20 people when
-        // someone searches "CTO of Zerodha" is confusing and disrespectful.
-        // For technical searches: keep top 20 for variety.
+        // ── THREE-TIER PARTITION ───────────────────────────────────────────────
+        //  full    — has ALL required languages (C AND Assembly both present)
+        //  primary — has PRIMARY only, missing secondary (has C, no Assembly in repos)
+        //  none    — has neither (JS dev in Delhi, no C or Assembly at all)
+        const primaryLangReq = langInfo.primary ? langInfo.primary.toLowerCase() : null;
+        const secondaryLangReqs = langInfo.secondary.map((l: string) => l.toLowerCase());
+        const allRequired = [...(primaryLangReq ? [primaryLangReq] : []), ...secondaryLangReqs];
+
+        const getMatchTier = (p: typeof scored[0]): { tier: 'full'|'primary'|'none'; missingLangs: string[] } => {
+          if (allRequired.length === 0) return { tier: 'full', missingLangs: [] };
+          const devLangs = p.languages.filter(l => l.percentage > 0.5).map(l => l.name.toLowerCase());
+          const matchLang = (r: string) => devLangs.some(dl =>
+            dl === r || dl.replace(/[+#]/g,'') === r.replace(/[+#]/g,'')
+          );
+          const missing = allRequired.filter(r => !matchLang(r));
+          if (missing.length === 0) return { tier: 'full', missingLangs: [] };
+          // Has primary language but missing some/all secondary
+          if (primaryLangReq && matchLang(primaryLangReq)) return { tier: 'primary', missingLangs: missing };
+          return { tier: 'none', missingLangs: missing };
+        };
+
         const resultCap = mode === 'person' ? 3 : 20;
-        const topCandidates = scored.sort((a, b) => b.score - a.score).slice(0, resultCap);
+        const allSorted = scored.sort((a, b) => b.score - a.score);
+
+        const fullMatches    = allSorted.filter(p => getMatchTier(p).tier === 'full')
+          .map(p => ({ ...p, matchTier: 'full'    as const, missingLangs: [] as string[] }));
+        const partialMatches = allSorted.filter(p => getMatchTier(p).tier === 'primary')
+          .map(p => ({ ...p, matchTier: 'primary' as const, missingLangs: getMatchTier(p).missingLangs }));
+        const nearMatches    = allSorted.filter(p => getMatchTier(p).tier === 'none')
+          .map(p => ({ ...p, matchTier: 'none'    as const, missingLangs: getMatchTier(p).missingLangs }));
+
+        const presorted = [
+          ...fullMatches,
+          ...partialMatches,
+          ...nearMatches,
+        ].slice(0, resultCap);
+
+        // Update searchQuality
+        if (allRequired.length > 0 && fullMatches.length === 0 && partialMatches.length === 0) {
+          searchQuality = 'none';
+        } else if (allRequired.length > 0 && fullMatches.length < 3) {
+          if (searchQuality === 'good') searchQuality = 'partial';
+        }
+
+        const top15 = presorted.slice(0, 15);
+        await Promise.all(top15.map(async (p) => {
+          p.commitCalendar = await getYearContributions(p.handle, token);
+        }));
+        const topCandidates = presorted;
+
 
         // ── STAGE 6: RICH AI ASSESSMENT ────────────────────────────────────
         send({ type: 'progress', step: 6, total: 6, label: `AI reviewing code output & writing assessments...` });
@@ -821,7 +1209,7 @@ Return ONLY JSON: {"assessments":[{"handle":"string","assessment":"string"}]${mo
 
         const final = finalCandidates;
 
-        send({ type: 'done', data: final });
+        send({ type: 'done', data: final, searchQuality, locationFiltered: !!(locationInfo && mode !== 'person') });
         controller.close();
 
       } catch (err: any) {
