@@ -1585,33 +1585,11 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
         // ── STRICT STACK FILTER (mirrors the deterministic path) ──────────────
         // Drop tier 'none' — people who lack the role's required languages entirely.
         // For technical role searches, this is a hard gate, not a soft penalty.
-        const validCandidates = mode === 'technical'
+        let validCandidates = mode === 'technical'
           ? allWithTiers.filter(p => p.matchTier !== 'none')
           : allWithTiers;
 
-        // STRICT QUALITY RANKING: Sort strictly by quality score, ignoring match tier grouping
-        const presorted = validCandidates.sort((a, b) => b.score - a.score).slice(0, resultCap);
-
-        // Update searchQuality based on what we found (before cap)
-        const fullMatches = validCandidates.filter(p => p.matchTier === 'full');
-        const partialMatches = validCandidates.filter(p => p.matchTier === 'primary');
-        
-        if (allRequired.length > 0 && fullMatches.length === 0 && partialMatches.length === 0) {
-          searchQuality = 'none';
-        } else if (allRequired.length > 0 && fullMatches.length < 3) {
-          if (searchQuality === 'good') searchQuality = 'partial';
-        }
-
-        const top15 = presorted.slice(0, 15);
-        await Promise.all(top15.map(async (p) => {
-          p.commitCalendar = await getYearContributions(p.handle, token);
-        }));
-        
-        let finalCandidates = presorted
-          .map(p => ({ ...p, summary: p.summary || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars across ${p.own_repos} repos.` }))
-          .filter(p => p.score >= 3);
-
-        // For person searches, strictly filter out false-positives using the AI's identity assessment or deterministic target match.
+        // For person searches, strictly filter out false-positives using the AI's identity assessment or deterministic target match BEFORE capping.
         if (mode === 'person') {
           // Normalize targets list
           const targetUsernames: string[] = [];
@@ -1637,7 +1615,7 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
           }
 
           // Check if any candidate is an exact match for target username or target real name
-          const hasExactMatch = finalCandidates.some(p => {
+          const hasExactMatch = validCandidates.some(p => {
             const handle = p.handle.toLowerCase();
             const name = p.name.toLowerCase();
             return targetUsernames.includes(handle) || targetNames.includes(name);
@@ -1645,16 +1623,38 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
 
           if (hasExactMatch) {
             // If we have an exact match, only return candidates that match the target username or target real name
-            finalCandidates = finalCandidates.filter(p => {
+            validCandidates = validCandidates.filter(p => {
               const handle = p.handle.toLowerCase();
               const name = p.name.toLowerCase();
               return targetUsernames.includes(handle) || targetNames.includes(name);
             });
           } else if (semanticRes.orderedHandles && semanticRes.orderedHandles.length > 0) {
             // Fallback to LLM orderedHandles if no deterministic exact match is found in the pool
-            finalCandidates = finalCandidates.filter(p => semanticRes.orderedHandles!.includes(p.handle));
+            validCandidates = validCandidates.filter(p => semanticRes.orderedHandles!.includes(p.handle));
           }
         }
+
+        // STRICT QUALITY RANKING: Sort strictly by quality score, ignoring match tier grouping
+        const presorted = validCandidates.sort((a, b) => b.score - a.score).slice(0, resultCap);
+
+        // Update searchQuality based on what we found (before cap)
+        const fullMatches = validCandidates.filter(p => p.matchTier === 'full');
+        const partialMatches = validCandidates.filter(p => p.matchTier === 'primary');
+        
+        if (allRequired.length > 0 && fullMatches.length === 0 && partialMatches.length === 0) {
+          searchQuality = 'none';
+        } else if (allRequired.length > 0 && fullMatches.length < 3) {
+          if (searchQuality === 'good') searchQuality = 'partial';
+        }
+
+        const top15 = presorted.slice(0, 15);
+        await Promise.all(top15.map(async (p) => {
+          p.commitCalendar = await getYearContributions(p.handle, token);
+        }));
+        
+        let finalCandidates = presorted
+          .map(p => ({ ...p, summary: p.summary || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars across ${p.own_repos} repos.` }))
+          .filter(p => p.score >= 3);
 
         const final = finalCandidates;
 
