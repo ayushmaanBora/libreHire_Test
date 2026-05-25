@@ -167,13 +167,13 @@ function LanguageProficiency({ languages }: { languages: LanguageBar[] }) {
 function ScoreBox({ score, breakdown }: { score:number; breakdown:Record<string,number>|ScoreBreakdown }) {
   const bg = score>=75?'bg-black text-white':score>=50?'bg-gray-800 text-white':score>=30?'bg-gray-200 text-black':'bg-gray-100 text-gray-400';
 
-  // Normalize breakdown to display pairs
+  // Normalize breakdown to display pairs — hide relevance (not part of displayed score)
   const entries = Object.entries(breakdown)
-    .filter(([k]) => k !== 'locationMatch') // shown separately
+    .filter(([k]) => k !== 'locationMatch' && k !== 'relevance') // relevance controls sorting, not score
     .map(([k,v]) => ({
-      label: k.replace(/([A-Z])/g,' $1').replace('activityRecency','Activity').replace('codeQuality','Quality').replace('profileSignal','Profile').replace('relevance','Match').trim(),
+      label: k.replace(/([A-Z])/g,' $1').replace('activityRecency','Activity').replace('codeQuality','Code Qua.').replace('profileSignal','Profile').replace('semanticMatch','Influence').trim(),
       val: v as number,
-      max: k==='relevance'||k==='codeQuality'?40:k==='activityRecency'||k==='activity'?30:k==='profileSignal'||k==='profileCompleteness'?20:10,
+      max: k==='codeQuality'?35:k==='activityRecency'||k==='activity'?25:k==='semanticMatch'?25:k==='profileSignal'||k==='profileCompleteness'?15:k==='influence'?25:15,
     }));
   const locMatch = (breakdown as any).locationMatch as number | undefined;
 
@@ -324,7 +324,7 @@ function DeveloperCard({ profile, rank }: { profile:DeveloperProfile; rank:numbe
           </span>
         </div>
       )}
-      <div className="flex justify-between items-start gap-6 mb-4">
+      <div className="flex flex-col md:flex-row justify-between items-start gap-6 mb-4">
         <div className="flex items-start gap-5 flex-1 min-w-0">
           <img src={profile.avatar} alt={profile.handle} className="w-20 h-20 border-4 border-black object-cover flex-shrink-0" />
           <div className="min-w-0">
@@ -707,8 +707,8 @@ export default function Home() {
       {loading && <LoadingScreen progress={progress} query={currentQuery} />}
 
       {/* NAVBAR */}
-      <header className="border-b-4 border-black px-8 py-5 flex justify-between items-center">
-        <div className="flex items-center gap-10">
+      <header className="border-b-4 border-black px-4 md:px-8 py-4 md:py-5 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div className="flex flex-col md:flex-row items-center gap-2 md:gap-10 w-full md:w-auto">
           <h1
             onClick={() => {
               setActiveView('search');
@@ -723,7 +723,7 @@ export default function Home() {
             }}
             className="text-2xl font-black tracking-tighter cursor-pointer hover:opacity-60 italic uppercase"
           >LIBRE-HIRE</h1>
-          <nav className="hidden md:flex gap-6 text-xs font-mono uppercase tracking-widest text-gray-500">
+          <nav className="flex gap-4 md:gap-6 text-[10px] md:text-xs font-mono uppercase tracking-widest text-gray-500">
             {(['how-to','about'] as const).map(v=>(
               <button key={v} onClick={()=>setActiveView(v)} className={`hover:text-black transition-colors ${activeView===v?'text-black font-bold':''}`}>
                 {v==='how-to'?'How to Use':'About'}
@@ -731,9 +731,15 @@ export default function Home() {
             ))}
           </nav>
         </div>
-        <button onClick={()=>setIsConfigOpen(true)} className="border-2 border-black px-4 py-2 text-xs font-mono font-bold uppercase tracking-widest hover:bg-black hover:text-white transition-colors">
-          Configure Engine
-        </button>
+        <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto">
+          <a href="https://github.com/ayushmaanBora/libreHire" target="_blank" rel="noopener noreferrer" className="border-2 border-black px-4 py-2 text-[10px] md:text-xs font-mono font-bold uppercase tracking-widest hover:bg-black hover:text-white transition-colors w-full md:w-auto flex items-center justify-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
+            GitHub
+          </a>
+          <button onClick={()=>setIsConfigOpen(true)} className="border-2 border-black px-4 py-2 text-[10px] md:text-xs font-mono font-bold uppercase tracking-widest hover:bg-black hover:text-white transition-colors w-full md:w-auto">
+            Configure Engine
+          </button>
+        </div>
       </header>
 
       <main className="max-w-4xl mx-auto px-6 mt-14">
@@ -741,49 +747,53 @@ export default function Home() {
         {activeView === 'search' && (
           <div>
             {/* HERO */}
-            <div className="mb-10">
+            <div className="mb-10 text-center">
               <h2 className="text-4xl md:text-5xl font-black text-gray-200 tracking-tighter uppercase mb-4 leading-tight">
                 STOP PAYING DATA BROKERS.<br />SOURCE BUILDERS ETHICALLY.
               </h2>
-              <p className="font-mono text-sm leading-relaxed max-w-2xl font-semibold text-gray-700">
-                Free, open-source developer sourcing. Real commit data, byte-weighted language proficiency, ethical contact discovery — only showing what developers have publicly shared themselves.
+              <p className="font-mono text-sm leading-relaxed max-w-2xl font-semibold text-gray-700 mx-auto">
+                A Free & Open Source ethical recruiter tool. It analyses GitHub profiles and provides you the best matches according to your requirements and helps you reach out to them. You can also search up particular GitHub profiles and have them scored.
               </p>
             </div>
 
             {/* TABS */}
-            <div className="flex flex-wrap border-b-4 border-black mb-10">
-              <button
-                onClick={()=>setActiveTab('hunt')}
-                className={`px-6 py-3 font-mono text-sm font-bold uppercase tracking-widest transition-colors ${activeTab==='hunt'?'bg-black text-white':'hover:bg-gray-100'}`}
-              >
-                🔍 Open Search
-              </button>
-              <button
-                onClick={()=>setActiveTab('precision')}
-                className={`px-6 py-3 font-mono text-sm font-bold uppercase tracking-widest transition-colors ${activeTab==='precision'?'bg-black text-white':'hover:bg-gray-100'}`}
-              >
-                🎯 Precision Hunt
-              </button>
-              <button
-                onClick={()=>setActiveTab('profile')}
-                className={`px-6 py-3 font-mono text-sm font-bold uppercase tracking-widest transition-colors ${activeTab==='profile'?'bg-black text-white':'hover:bg-gray-100'}`}
-              >
-                👤 Profile Deep-Dive
-              </button>
+            <div className="flex justify-center mb-10">
+              <div className="inline-flex flex-wrap border-b-4 border-black">
+                <button
+                  onClick={()=>setActiveTab('hunt')}
+                  className={`px-6 py-3 font-mono text-sm font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${activeTab==='hunt'?'bg-black text-white':'hover:bg-gray-100'}`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                  Open Search
+                </button>
+                <button
+                  onClick={()=>setActiveTab('precision')}
+                  className={`px-6 py-3 font-mono text-sm font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${activeTab==='precision'?'bg-black text-white':'hover:bg-gray-100'}`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="6"></circle><circle cx="12" cy="12" r="2"></circle></svg>
+                  Precision Hunt
+                </button>
+                <button
+                  onClick={()=>setActiveTab('profile')}
+                  className={`px-6 py-3 font-mono text-sm font-bold uppercase tracking-widest transition-colors flex items-center gap-2 ${activeTab==='profile'?'bg-black text-white':'hover:bg-gray-100'}`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                  Profile Search
+                </button>
+              </div>
             </div>
 
             {/* HUNT TAB */}
             {activeTab === 'hunt' && (
               <div>
-                <form onSubmit={handleHunt} className="relative flex items-end mb-4">
+                <form onSubmit={handleHunt} className="relative flex flex-col md:flex-row md:items-end mb-4 md:gap-0 gap-4">
                   <input
                     type="text" value={query} onChange={e=>setQuery(e.target.value)}
                     placeholder="kernel developers in bangalore"
-                    className="w-full text-3xl md:text-4xl font-bold bg-transparent border-b-4 border-black outline-none pb-4 pr-32 placeholder:text-gray-200"
-                    autoFocus
+                    className="w-full text-xl md:text-4xl font-bold bg-transparent border-b-4 border-black outline-none pb-4 pr-0 md:pr-32 placeholder:text-gray-200"
                   />
                   <button type="submit" disabled={loading}
-                    className="absolute right-0 bottom-3 bg-black text-white px-6 py-3 font-mono font-bold tracking-widest text-sm hover:bg-gray-800 disabled:opacity-40 transition-colors">
+                    className="w-full md:w-auto md:absolute md:right-0 md:bottom-3 bg-black text-white px-6 py-3 font-mono font-bold tracking-widest text-sm hover:bg-gray-800 disabled:opacity-40 transition-colors">
                     HUNT
                   </button>
                 </form>
@@ -791,12 +801,12 @@ export default function Home() {
                 <div className="mb-10 flex flex-wrap gap-2">
                   <span className="text-[10px] font-mono text-gray-400 uppercase tracking-widest mr-1 self-center">Try:</span>
                   {[
-                    'rust + C devs in bangalore',
+                    'rust devs in bangalore',
                     'founder of xeneva',
                     'kernel engineers india',
                     'ml researcher python',
                     'ios developer san francisco',
-                    'QA analyst bangalore working at Nasdaq',
+                    'CTO of Zerodha',
                     'who built supabase',
                   ].map(tip=>(
                     <button key={tip} onClick={()=>setQuery(tip)}
@@ -827,22 +837,21 @@ export default function Home() {
                     Enter any GitHub username to get a full AI-powered profile assessment — their projects, tech depth, activity, and fit. Perfect when you already have a candidate in mind.
                   </p>
                 </div>
-                <form onSubmit={handleProfileLookup} className="relative flex items-end mb-10">
-                  <div className="absolute left-0 bottom-4 text-gray-400 font-mono text-3xl md:text-4xl font-bold">@</div>
+                <form onSubmit={handleProfileLookup} className="relative flex flex-col md:flex-row md:items-end mb-10 md:gap-0 gap-4">
+                  <div className="absolute left-0 top-1 md:top-auto md:bottom-4 text-gray-400 font-mono text-3xl md:text-4xl font-bold">@</div>
                   <input
                     type="text" value={username} onChange={e=>setUsername(e.target.value)}
                     placeholder="torvalds"
-                    className="w-full text-3xl md:text-4xl font-bold bg-transparent border-b-4 border-black outline-none pb-4 pl-10 pr-40 placeholder:text-gray-200"
-                    autoFocus
+                    className="w-full text-xl md:text-4xl font-bold bg-transparent border-b-4 border-black outline-none pb-4 pl-10 pr-0 md:pr-40 placeholder:text-gray-200"
                   />
                   <button type="submit" disabled={loading}
-                    className="absolute right-0 bottom-3 bg-black text-white px-6 py-3 font-mono font-bold tracking-widest text-sm hover:bg-gray-800 disabled:opacity-40 transition-colors">
+                    className="w-full md:w-auto md:absolute md:right-0 md:bottom-3 bg-black text-white px-6 py-3 font-mono font-bold tracking-widest text-sm hover:bg-gray-800 disabled:opacity-40 transition-colors">
                     ANALYSE
                   </button>
                 </form>
-                <div className="flex flex-wrap gap-2 mb-6">
+                <div className="flex flex-wrap justify-center gap-2 mb-6">
                   <span className="text-[10px] font-mono text-gray-400 uppercase tracking-widest mr-1 self-center">Try:</span>
-                  {['torvalds','gaearon','antirez','yyx990803','tj'].map(u=>(
+                  {['torvalds','manaskamal','knadh'].map(u=>(
                     <button key={u} onClick={()=>setUsername(u)}
                       className="text-[11px] font-mono border border-gray-300 px-2 py-1 text-gray-500 hover:border-black hover:text-black transition-colors">
                       @{u}
@@ -879,7 +888,7 @@ export default function Home() {
               <>
                 <div className="flex items-center justify-between mb-10 border-b-2 border-black pb-4">
                   <span className="font-mono text-sm uppercase tracking-widest font-bold">{results.length} ranked candidates</span>
-                  <span className="font-mono text-xs text-gray-400 uppercase tracking-widest">Sorted by match · activity · quality</span>
+                  <span className="font-mono text-xs text-gray-400 uppercase tracking-widest">Sorted by quality score</span>
                 </div>
                 <div className="space-y-16">
                   {results.map((p, i) => {
@@ -1042,8 +1051,8 @@ export default function Home() {
       {/* CONFIG MODAL */}
       {isConfigOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={e=>{if(e.target===e.currentTarget)setIsConfigOpen(false);}}>
-          <div className="bg-white border-4 border-black p-8 w-full max-w-md shadow-[8px_8px_0px_0px_#000]">
-            <h2 className="text-2xl font-black uppercase tracking-tighter mb-6 border-b-2 border-black pb-3">Engine Configuration</h2>
+          <div className="bg-white border-4 border-black p-5 md:p-8 w-full max-w-md shadow-[4px_4px_0px_0px_#000] md:shadow-[8px_8px_0px_0px_#000] max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl md:text-2xl font-black uppercase tracking-tighter mb-6 border-b-2 border-black pb-3">Engine Configuration</h2>
             <div className="space-y-5 font-mono text-sm">
               <div>
                 <label className="block font-bold mb-1.5 uppercase tracking-widest text-xs">AI Provider</label>

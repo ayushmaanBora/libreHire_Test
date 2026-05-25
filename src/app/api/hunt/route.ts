@@ -1,4 +1,22 @@
 // src/app/api/hunt/route.ts
+import { pipeline, env } from '@xenova/transformers';
+
+// Skip local model checks since we are running serverless
+env.allowLocalModels = false;
+
+class PipelineSingleton {
+    static task = 'feature-extraction';
+    static model = 'Xenova/all-MiniLM-L6-v2';
+    static instance: any = null;
+
+    static async getInstance(progress_callback: any = null) {
+        if (this.instance === null) {
+            this.instance = pipeline(this.task, this.model, { progress_callback });
+        }
+        return this.instance;
+    }
+}
+
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -858,7 +876,9 @@ export async function POST(req: Request) {
       try {
         const body = await req.json();
         const { provider, llmKey, githubToken, baseUrl, modelName } = body;
-        const gHeaders: HeadersInit = { Authorization: `token ${githubToken}`, 'X-GitHub-Api-Version': '2022-11-28' };
+        const gHeaders: HeadersInit = githubToken && githubToken !== 'dummy'
+          ? { Authorization: `token ${githubToken}`, 'X-GitHub-Api-Version': '2022-11-28' }
+          : { 'User-Agent': 'libreHire-Test', 'X-GitHub-Api-Version': '2022-11-28' };
         const token = githubToken;
 
         // ── DETERMINISTIC MODE: bypass AI for query generation ──────────────
@@ -1081,375 +1101,100 @@ export async function POST(req: Request) {
           return;
         }
 
-        // ── OPEN-ENDED / PERSON SEARCH (original path) ─────────────────────
+        // ── OPEN-ENDED SEARCH (Stateless Hybrid Search) ─────────────────────
         const userQuery = body.userQuery || '';
-        const { mode, constraints } = detectQueryMode(userQuery);
 
-        // ── STAGE 1: AI QUERY GENERATION ───────────────────────────────────
-        send({ type: 'progress', step: 1, total: 6, label: 'Understanding your search intent...' });
+        // ── STAGE 1: AI QUERY GENERATION (Provider Agnostic) ───────────────
+        send({ type: 'progress', step: 1, total: 6, label: 'Parsing search intent...' });
 
-        // ── DETERMINISTIC PRE-PROCESSING ─────────────────────────────────────
-        // Extract location, languages, AND company signals from query BEFORE the LLM.
-        // This prevents LLM misidentification and ensures all signals are preserved.
-        const locationInfo = extractLocation(userQuery);
-        const langInfo = extractLanguages(userQuery);
-        const companySignal = extractCompany(userQuery);
-
-        // Build the primary language filter for GitHub search
-        // Use constraint must-list if we have one, otherwise use extracted lang
-        const negFilter = constraints ? constraints.negative.map(l => `-language:"${l}"`).join(' ') : '';
-        const mustLangs = constraints?.must || (langInfo.primary ? [langInfo.primary] : []);
-        const secondaryLangs = langInfo.secondary; // "also knows C" type skills
-
-        let intentPrompt: string;
-
-        if (mode === 'person') {
-          intentPrompt = `You are a GitHub search expert with extensive knowledge of the tech industry and open-source community.
-Someone is trying to find a specific person or people on GitHub.
+        const intentPrompt = `You are a senior technical recruiter building GitHub search parameters.
+Parse the following developer search query.
 Query: "${userQuery}"
 
-CRITICAL: Use your world knowledge to identify WHO this person actually is (or who these people are).
-For example:
-- "founder of linux" → Linus Torvalds, GitHub username "torvalds"
-- "who built supabase" → Paul Copplestone, GitHub username "kiwicopple"
-- "creator of react" → Jordan Walke, GitHub username "jordwalke"
-- "founder of xeneva" → Manas Kamal Choudhury, GitHub username "manaskamal"
-- "CTO of Zerodha" → Kailash Nadh, GitHub username "knadh"
-- "founders of stripe" → Patrick Collison ("pc"), John Collison ("johncollison")
-
-Generate 4 GitHub search queries to find this person or people. Return ONLY JSON:
-{"queries":["q1","q2","q3","q4"],"queryTerms":["t1","t2","t3"],"likelyUsername":"primary_username_or_empty","realName":"primary_name_or_empty","likelyUsernames":["username1","username2"],"realNames":["Name 1","Name 2"]}
+Extract the intent into this strict JSON format:
+{
+  "primary_locations": ["city or country 1", "city or country 2"],
+  "primary_language": "main programming language",
+  "secondary_languages": ["lang1", "lang2"],
+  "semantic_keywords": ["keyword1", "keyword2"]
+}
 
 Rules:
-- FIRST identify the actual person or people using your world knowledge, then build queries.
-- likelyUsername: your best guess at their primary GitHub login. If unknown, set to "". Do NOT guess or copy examples unless they match the query.
-- realName: their primary actual name. If unknown, set to "". Do NOT guess or copy examples unless they match the query.
-- likelyUsernames: list of likely usernames for the target person/people. If unknown, return empty array [].
-- realNames: list of real names for the target person/people. If unknown, return empty array [].
-- If likelyUsername is "", build general search queries using the query keywords (e.g. name of the project, role, or company).
-- q1: search by their likely username in:login (e.g. "torvalds in:login type:user") or search by query keywords if unknown.
-- q2: search their real name in:name (e.g. "Linus Torvalds in:name type:user") or search by query keywords if unknown.
-- q3: search their project or company name as keyword (e.g. "linux type:user" or "zerodha type:user")
-- q4: search by name + project/company (e.g. "linus torvalds linux type:user")
-- queryTerms: key identifying words (name parts, project name, username)
-- Do NOT add language filters for person searches`;
+- primary_locations: Array of locations. If none, return [].
+- primary_language: The main programming language required. If none, return "".
+- secondary_languages: Other languages or frameworks.
+- semantic_keywords: Technical domain keywords, company names, project names, or specific tools mentioned (e.g., "kernel", "zerodha", "react"). Return at most 5 keywords.
+- Return ONLY JSON.`;
+
+        let parsedIntent;
+        try {
+          const aiResponse = await callAI(intentPrompt, provider, llmKey, baseUrl, modelName);
+          parsedIntent = typeof aiResponse === 'string' ? JSON.parse(aiResponse) : aiResponse;
+          if (!parsedIntent.semantic_keywords) parsedIntent = { primary_locations: [], primary_language: '', secondary_languages: [], semantic_keywords: [userQuery] };
+        } catch (err) {
+          console.warn('AI Parsing failed, falling back to basic extraction:', err);
+          parsedIntent = { primary_locations: [], primary_language: '', secondary_languages: [], semantic_keywords: [userQuery] };
+        }
+
+        const { primary_locations, primary_language, secondary_languages, semantic_keywords } = parsedIntent;
+
+        // ── STAGE 2: MULTI-THREADED GITHUB FETCHING ─────────────────────────
+        send({ type: 'progress', step: 2, total: 6, label: 'Running parallel GitHub searches...' });
+
+        const ghQueries: string[] = [];
+        const locFilter = primary_locations.length > 0 ? `location:"${primary_locations[0]}"` : '';
+        const langFilter = primary_language ? `language:"${primary_language}"` : '';
+        const baseQuery = [locFilter, langFilter].filter(Boolean).join(' ');
+
+        if (semantic_keywords.length > 0) {
+          const kw = semantic_keywords[0];
+          ghQueries.push(`${baseQuery} ${kw} in:bio type:user`.trim());
+          ghQueries.push(`${baseQuery} ${kw} in:readme type:user`.trim());
+          ghQueries.push(`${baseQuery} ${kw} type:user`.trim());
+          if (semantic_keywords[1]) ghQueries.push(`${baseQuery} ${semantic_keywords[1]} type:user`.trim());
         } else {
-          // Build location-aware query strings using deterministic extraction
-          const locTag = locationInfo ? `location:"${locationInfo.canonical}"` : '';
-          const locVariants = locationInfo ? locationInfo.variants.slice(0, 2) : [];
-          const primaryLangFilter = mustLangs.length ? `language:"${mustLangs[0]}"` : '';
-          // For multi-language: search primary lang, then secondary as separate queries
-          const secondaryLangFilter = secondaryLangs.length ? `language:"${secondaryLangs[0]}"` : primaryLangFilter;
-
-          // For unknown cities (isKnown=false), the AI must generate spelling variants
-          // e.g. "mangalore" → also try "mangaluru", "karnataka"
-          // For known cities, we already have the variants list.
-          const locationInstruction = locationInfo
-            ? locationInfo.isKnown
-              ? `Location confirmed: "${locationInfo.canonical}". Use these variants across queries: ${locationInfo.variants.slice(0,4).join(', ')}`
-              : `Location detected: "${locationInfo.canonical}" — this may be a smaller city. You MUST:
-  1. Use it exactly as-is in one query (location:"${locationInfo.canonical}")
-  2. Try the most common alternate spelling or local name (e.g. Mangalore→Mangaluru, Kochi→Cochin)
-  3. Try the state/province/region it belongs to (e.g. Mangalore→Karnataka, Kochi→Kerala)
-  4. Try a nearby major hub city that developers there might list as their location`
-            : 'No specific location detected — make skill-focused queries only';
-
-          intentPrompt = `You are a technical recruiter building GitHub search queries.
-Query: "${userQuery}"
-Mode: ${mode}
-
-EXTRACTED DATA:
-- ${locationInstruction}
-- Primary language: ${mustLangs[0] || 'none — infer from query context'}
-- Secondary languages: ${secondaryLangs.join(', ') || 'none'}
-- Negative filters: ${negFilter || 'none'}
-${companySignal ? `- Company/Employer signal detected: "${companySignal}" — the person may have their GitHub bio, company field, or repos referencing this employer.` : ''}
-
-Generate 4 GitHub search queries. Return ONLY JSON:
-{"queries":["q1","q2","q3","q4"],"queryTerms":["t1","t2","t3"]}
-
-RULES:
-${(() => {
-          const roleKeyForPrompt = Object.keys(ROLE_SEARCH_KEYWORDS).sort((a, b) => b.length - a.length)
-            .find(k => userQuery.toLowerCase().includes(k)) || '';
-          const domainTerms = ROLE_SEARCH_KEYWORDS[roleKeyForPrompt] || [];
-          const bioHint = domainTerms.length > 0
-            ? `Use these domain keywords for in:bio search: ${domainTerms.slice(0, 3).join(', ')}\n`
-            : '';
-          if (companySignal && locationInfo) {
-            return `\nCOMPANY + LOCATION SEARCH — company is the PRIMARY signal, location is secondary.\n- q1: "${companySignal}" location:"${locationInfo.canonical}" type:user  (company keyword + city)\n- q2: "${companySignal}" location:"${locationInfo.variants[1] || locationInfo.canonical}" type:user  (alt city spelling)\n- q3: "${companySignal}" type:user repos:>0  (global — employer self-identifies anywhere in profile)\n- q4: ${primaryLangFilter ? `location:"${locationInfo.canonical}" ${primaryLangFilter} type:user` : `location:"${locationInfo.canonical}" type:user`}  (location+skill fallback, no company filter)\n`;
-          } else if (locationInfo) {
-            return `${bioHint}- q1: location:"${locationInfo.canonical}" ${domainTerms[0] || ''} ${domainTerms[1] || ''} in:bio type:user  (bio-keyword — find self-identified experts)\n- q2: location:"${locationInfo.variants[1] || locationInfo.canonical}" ${primaryLangFilter} ${domainTerms[0] ? domainTerms[0] + ' in:bio' : ''} type:user ${negFilter}  (language + bio keyword + alt city)\n- q3: location:"${locationInfo.canonical}" ${primaryLangFilter} type:user ${negFilter}  (language-only fallback)\n- q4: location:"${locationInfo.variants[1] || locationInfo.canonical}" ${primaryLangFilter} type:user ${negFilter}  (alt city spelling + language)`;
-          } else {
-            return `${bioHint}- q1-q2: Use domain keywords (${domainTerms.slice(0, 2).join(', ') || 'role terms'}) with in:bio for targeted role search.\n- q3-q4: Skill-focused queries with different language and keyword combinations.`;
-          }
-        })()}
-${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain "${companySignal}" as a keyword to find devs who self-identify with this employer in bio/company/login.` : ''}
-- NEVER use a city from a different country or region than what was asked
-- queryTerms: list the primary language, secondary languages, key role words, and the company name if one was detected (NO generic location words)`;
+          ghQueries.push(`${baseQuery} type:user`.trim());
         }
+        
+        // Ensure we have fallback queries if no keywords
+        if (ghQueries.length === 0) ghQueries.push('type:user');
 
-        const params = await callAI(intentPrompt, provider, llmKey, baseUrl, modelName);
-        if (!params?.queries?.length) throw new Error('AI failed to build queries.');
+        const uniqueQueries = [...new Set(ghQueries)].slice(0, 5);
+        console.log('[DEBUG] GitHub Queries:', uniqueQueries);
 
-        // Sanitize and check for few-shot biases / hallucinations in person search
-        if (mode === 'person') {
-          const lowerQuery = userQuery.toLowerCase();
-          
-          // Mappings of example keywords to usernames from the prompt
-          const exampleCheck = [
-            { key: 'linux', user: 'torvalds' },
-            { key: 'supabase', user: 'kiwicopple' },
-            { key: 'react', user: 'jordwalke' },
-            { key: 'xeneva', user: 'manaskamal' },
-            { key: 'zerodha', user: 'knadh' },
-            { key: 'stripe', user: 'pc' },
-            { key: 'stripe', user: 'johncollison' }
-          ];
+        const searchResults = await Promise.all(
+          uniqueQueries.map(q =>
+            fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=40&sort=followers&order=desc`, { headers: gHeaders })
+              .then(r => r.json()).catch(() => ({ items: [] }))
+          )
+        );
 
-          let isHallucinated = false;
-          const likelyUserLower = (params.likelyUsername || '').toLowerCase().trim();
-          for (const item of exampleCheck) {
-            if (likelyUserLower === item.user && !lowerQuery.includes(item.key)) {
-              isHallucinated = true;
-              break;
-            }
-          }
-
-          if (isHallucinated) {
-            console.log(`[SANITY CHECK] Hallucinated username "${params.likelyUsername}" detected for query "${userQuery}". Clearing likelyUsername/realName.`);
-            params.likelyUsername = '';
-            params.realName = '';
-            params.likelyUsernames = [];
-            params.realNames = [];
-            params.queries = [];
-          } else {
-            // Even if likelyUsername is fine, check if some queries got hallucinated usernames
-            params.queries = (params.queries || []).filter((q: string) => {
-              const qLower = q.toLowerCase();
-              for (const item of exampleCheck) {
-                if (qLower.includes(item.user) && !lowerQuery.includes(item.key)) {
-                  return false;
-                }
-              }
-              return true;
-            });
-          }
-
-          // Clean queryTerms from hallucinated names/usernames
-          params.queryTerms = (params.queryTerms || []).filter((t: any) => {
-            if (typeof t !== 'string') return false;
-            const tLower = t.toLowerCase();
-            for (const item of exampleCheck) {
-              if ((tLower === item.user || tLower === item.key) && !lowerQuery.includes(item.key)) {
-                return false;
-              }
-            }
-            return true;
-          });
-
-          // Extract company/project name from query deterministically
-          const extractedComp = extractCompany(userQuery) || extractImpliedCompany(userQuery);
-          // Extract name keywords
-          const queryWords = userQuery.replace(/[^a-zA-Z0-9\s-]/g, '').split(/\s+/).filter(w => w.length >= 2);
-          const stopWords = new Set(['who', 'what', 'the', 'of', 'is', 'in', 'at', 'for', 'a', 'an', 'and', 'or', 'founder', 'founders', 'creator', 'creators', 'author', 'maintainer', 'lead', 'cto', 'ceo', 'built', 'made', 'created', 'find', 'search', 'developer', 'engineer', 'person']);
-          const nameKeywords = queryWords.filter(w => !stopWords.has(w.toLowerCase()));
-
-          // If queries is empty or we cleared them due to hallucination, build them deterministically
-          if (!params.queries || params.queries.length === 0) {
-            const queries: string[] = [];
-            
-            // If we have name keywords (e.g. "Kailash Nadh" -> ["Kailash", "Nadh"])
-            if (nameKeywords.length > 0) {
-              const fullName = nameKeywords.join(' ');
-              queries.push(`"${fullName}" type:user`);
-              queries.push(`${fullName} type:user`);
-              if (extractedComp) {
-                queries.push(`"${fullName}" "${extractedComp}" type:user`);
-                queries.push(`${fullName} ${extractedComp} type:user`);
-              }
-            }
-            
-            // If we have a company and role (e.g. "CTO of Zerodha")
-            if (extractedComp) {
-              const roleWord = queryWords.find(w => ['cto', 'ceo', 'founder', 'founders', 'creator', 'lead', 'head', 'director'].includes(w.toLowerCase())) || 'member';
-              queries.push(`"${extractedComp}" "${roleWord}" type:user`);
-              queries.push(`org:${extractedComp} type:user`);
-              queries.push(`"${extractedComp}" type:user`);
-            }
-            
-            // Fallback: search query keywords directly
-            if (queries.length === 0) {
-              queries.push(`${userQuery} type:user`);
-            }
-            
-            params.queries = [...new Set(queries)].slice(0, 4);
-          }
-        }
-
-        // Merge AI-returned queryTerms with our deterministically extracted languages
-        // This ensures primary + secondary langs are always in queryTerms for scoring
-        // Sanitize AI terms — the LLM sometimes returns non-string values (numbers, null)
-        const aiTerms: string[] = (params.queryTerms || []).filter((t: any) => typeof t === 'string' && t.length > 0);
-        const detectedLangTerms = [
-          ...(langInfo.primary ? [langInfo.primary.toLowerCase()] : []),
-          ...langInfo.secondary.map(l => l.toLowerCase()),
-        ];
-        // Merge: extracted langs first (they're authoritative), then AI terms
-        const queryTerms: string[] = [
-          ...detectedLangTerms,
-          ...aiTerms.filter(t => typeof t === 'string' && !detectedLangTerms.includes(t.toLowerCase())),
-        ];
-
-        // Also try implied company ("Vercel developers") if explicit triggers didn't fire
-        const effectiveCompany = companySignal || extractImpliedCompany(userQuery);
-
-        // ── STAGE 2: GITHUB SEARCH ─────────────────────────────────────────
-        // ── REPO-DOMAIN SEARCH (run in parallel with user search) ───────────
-        // Determine role key for repo search from detected mode + constraints
-        const osRoleKey = Object.keys(ROLE_CONSTRAINTS).sort((a, b) => b.length - a.length)
-          .find(k => userQuery.toLowerCase().includes(k)) || '';
-        const osMustLangs = constraints?.must || (langInfo.primary ? [langInfo.primary] : []);
-
-        send({ type: 'progress', step: 2, total: 6, label: `Running ${params.queries.length} searches + repo domain scan...` });
-
-        const [searchResults, osRepoOwnerMap] = await Promise.all([
-          Promise.all(
-            params.queries.map((q: string) =>
-              fetch(`https://api.github.com/search/users?q=${encodeURIComponent(q)}&per_page=100&sort=followers&order=desc`, { headers: gHeaders })
-                .then(r => r.json()).catch(() => ({ items: [] }))
-            )
-          ),
-          mode === 'technical' ? searchByDomainRepos(osRoleKey, osMustLangs, gHeaders) : Promise.resolve(new Map<string, any>())
-        ]);
-
-        // Track appearance count — users appearing in more query results are better matches
-        const osAppearCount = new Map<number, number>();
-        const osUserMap = new Map<number, any>();
+        const userMap = new Map();
         for (const data of searchResults) {
           for (const item of (data.items || [])) {
-            if (item.type === 'User') {
-              osAppearCount.set(item.id, (osAppearCount.get(item.id) || 0) + 1);
-              if (!osUserMap.has(item.id)) osUserMap.set(item.id, item);
+            if (item.type === 'User' && !userMap.has(item.id)) {
+              userMap.set(item.id, item);
             }
           }
         }
 
-        // Merge repo-domain owners into user pool with priority boost
-        for (const [login, owner] of osRepoOwnerMap) {
-          if (!osUserMap.has(owner.id)) {
-            osUserMap.set(owner.id, owner);
-            osAppearCount.set(owner.id, 3);
-          } else {
-            osAppearCount.set(owner.id, (osAppearCount.get(owner.id) || 0) + 2);
-          }
-        }
-
-        const uniqueItems: any[] = [...osUserMap.values()]
-          .sort((a, b) => (osAppearCount.get(b.id) || 0) - (osAppearCount.get(a.id) || 0))
-          .slice(0, 80);
-
-        // ── PERSON SEARCH: DIRECT USER LOOKUPS ─────────────────────────────
-        // When searching for a specific person ("linus torvalds", "founder of linux"),
-        // the GitHub user search API often misses the actual user.
-        // Fix: use AI-identified username first, then extract words as fallback.
-        if (mode === 'person') {
-          // Priority 1: AI-identified username (highest confidence)
-          const aiUsername = params.likelyUsername?.trim();
-          const aiRealName = params.realName?.trim();
-          
-          // Build candidate list: AI username first, then query-extracted words
-          const usernameCandidates: string[] = [];
-          if (aiUsername) usernameCandidates.push(aiUsername.toLowerCase());
-
-          // Add all likelyUsernames from the array
-          if (Array.isArray(params.likelyUsernames)) {
-            params.likelyUsernames.forEach((u: any) => {
-              if (typeof u === 'string' && u) {
-                const uLower = u.toLowerCase().trim();
-                if (!usernameCandidates.includes(uLower)) usernameCandidates.push(uLower);
-              }
-            });
-          }
-          
-          // Also try variations of the AI real name
-          if (aiRealName) {
-            const nameParts = aiRealName.toLowerCase().split(/\s+/);
-            for (const p of nameParts) if (p.length >= 2) usernameCandidates.push(p);
-            if (nameParts.length >= 2) {
-              usernameCandidates.push(nameParts.join('')); // "linustorvalds"
-              usernameCandidates.push(nameParts.join('-')); // "linus-torvalds"
-              usernameCandidates.push(nameParts[nameParts.length - 1]); // "torvalds" (surname)
-            }
-          }
-
-          // Add variations of realNames array
-          if (Array.isArray(params.realNames)) {
-            params.realNames.forEach((n: any) => {
-              if (typeof n === 'string' && n) {
-                const nameParts = n.toLowerCase().split(/\s+/);
-                for (const p of nameParts) if (p.length >= 2 && !usernameCandidates.includes(p)) usernameCandidates.push(p);
-                if (nameParts.length >= 2) {
-                  const join1 = nameParts.join('');
-                  const join2 = nameParts.join('-');
-                  const join3 = nameParts[nameParts.length - 1];
-                  if (!usernameCandidates.includes(join1)) usernameCandidates.push(join1);
-                  if (!usernameCandidates.includes(join2)) usernameCandidates.push(join2);
-                  if (!usernameCandidates.includes(join3)) usernameCandidates.push(join3);
-                }
-              }
-            });
-          }
-          
-          // Fallback: extract words from original query
-          const words = userQuery.toLowerCase().replace(/[^a-z0-9\s-]/g, '').split(/\s+/).filter((w: string) => w.length >= 2);
-          const stopWords = new Set(['who','what','the','of','is','in','at','for','a','an','and','or','founder','creator','author','maintainer','lead','cto','ceo','built','made','created','find','search','developer','engineer']);
-          const nameWords = words.filter((w: string) => !stopWords.has(w));
-          for (const w of nameWords) {
-            if (!usernameCandidates.includes(w)) usernameCandidates.push(w);
-          }
-
-          // Deduplicate
-          const uniqueCandidates = [...new Set(usernameCandidates)];
-
-          // Direct lookup: try to fetch each username candidate
-          const directLookups = await Promise.all(
-            uniqueCandidates.slice(0, 10).map(async (uname: string) => {
-              try {
-                const res = await fetch(`https://api.github.com/users/${uname}`, { headers: gHeaders });
-                if (!res.ok) return null;
-                const u = await res.json();
-                if (u && u.id && u.type === 'User' && !osUserMap.has(u.id)) {
-                  osUserMap.set(u.id, u);
-                  return u;
-                }
-                return null;
-              } catch { return null; }
-            })
-          );
-          for (const u of directLookups) {
-            if (u) uniqueItems.unshift(u); // prepend — these are high-confidence
-          }
-        }
-
+        const uniqueItems = [...userMap.values()].slice(0, 80);
         if (!uniqueItems.length) {
-          send({ type: 'error', message: 'No developers found. Try different keywords — e.g. use their GitHub username, project name, or company.' });
+          send({ type: 'error', message: 'No developers found matching your criteria.' });
           controller.close(); return;
         }
 
-        // ── STAGE 3: ENRICHMENT ────────────────────────────────────────────
-        send({ type: 'progress', step: 3, total: 6, label: `Reading ${uniqueItems.length} profiles...` });
-
-        const enriched: any[] = [];
-        // Batch 12, no inter-batch delay — GitHub rate limit is per-minute, not per-request
-        for (let i = 0; i < uniqueItems.length; i += 12) {
-          const batch = uniqueItems.slice(i, i + 12);
+        // ── STAGE 3: DATA ENRICHMENT ────────────────────────────────────────
+        send({ type: 'progress', step: 3, total: 6, label: `Fetching profiles for ${uniqueItems.length} candidates...` });
+        const enriched = [];
+        for (let i = 0; i < uniqueItems.length; i += 15) {
+          const batch = uniqueItems.slice(i, i + 15);
           const res = await Promise.all(batch.map(async (item) => {
             try {
               const [uRes, rRes, eRes] = await Promise.all([
                 fetch(`https://api.github.com/users/${item.login}`, { headers: gHeaders }),
-                fetch(`https://api.github.com/users/${item.login}/repos?per_page=60&sort=pushed`, { headers: gHeaders }),
-                fetch(`https://api.github.com/users/${item.login}/events/public?per_page=60`, { headers: gHeaders }),
+                fetch(`https://api.github.com/users/${item.login}/repos?per_page=40&sort=pushed`, { headers: gHeaders }),
+                fetch(`https://api.github.com/users/${item.login}/events/public?per_page=30`, { headers: gHeaders }),
               ]);
               const [u, repos, events] = await Promise.all([
                 uRes.ok ? uRes.json() : null,
@@ -1463,47 +1208,57 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
           enriched.push(...res.filter(Boolean));
         }
 
-        // ── LOCATION PRE-FILTER ──────────────────────────────────────────────
-        // After enrichment we have real user.location. Filter out confirmed
-        // wrong-location devs BEFORE the expensive language/calendar fetch.
-        let candidatePool = enriched;
-        let searchQuality = 'good';
-        if (locationInfo && mode !== 'person') {
-          const allVariants = locationInfo.variants.map(v => v.toLowerCase());
-          const locMatches = enriched.filter(({ user }) => {
-            const uLoc = (user.location || '').toLowerCase();
-            if (!uLoc) return false; // STRICT: unknown location → drop
-            return allVariants.some(v => uLoc.includes(v) || v.includes(uLoc)) ||
-                   uLoc.includes(locationInfo.canonical.toLowerCase());
-          });
-          
-          candidatePool = locMatches;
-          if (candidatePool.length === 0) {
-            send({ type: 'error', message: `No developers found strictly matching ${locationInfo.canonical} and your tech stack. Try expanding the location.` });
-            controller.close(); return;
-          }
+        // ── STAGE 4: LOCAL JIT EMBEDDING & COSINE SCORING ───────────────────
+        send({ type: 'progress', step: 4, total: 6, label: 'Running local semantic scoring...' });
+        
+        const extractor = await PipelineSingleton.getInstance();
+        const keywordString = semantic_keywords.join(' ');
+        
+        let keywordEmbedding: any = null;
+        if (keywordString) {
+            const out = await extractor(keywordString, { pooling: 'mean', normalize: true });
+            keywordEmbedding = out.data;
         }
 
-        // ── STAGE 4: SEMANTIC PROJECT ANALYSIS & LANGUAGE PROFICIENCY ────────────────
-        send({ type: 'progress', step: 4, total: 5, label: `Semantic Analysis of ${candidatePool.length} candidates...` });
+        function cosineSimilarity(a: any, b: any) {
+            let dotProduct = 0;
+            let normA = 0;
+            let normB = 0;
+            for (let i = 0; i < a.length; i++) {
+                dotProduct += a[i] * b[i];
+                normA += a[i] * a[i];
+                normB += b[i] * b[i];
+            }
+            if (normA === 0 || normB === 0) return 0;
+            return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        }
 
-        const [withLangs, semanticRes] = await Promise.all([
-          Promise.all(
-            candidatePool.map(async ({ user, repos, events }) => {
-              const langBars = await getLanguageProficiency(user.login, repos, gHeaders, langInfo.primary ? [langInfo.primary, ...langInfo.secondary] : []);
-              return { user, repos, events, langBars };
-            })
-          ),
-          evaluateSemanticMatch(userQuery, candidatePool, provider, llmKey, baseUrl, modelName, mode)
-        ]);
+        const withLangs = await Promise.all(
+          enriched.map(async ({ user, repos, events }) => {
+            const langBars = await getLanguageProficiency(user.login, repos, gHeaders, primary_language ? [primary_language, ...secondary_languages] : []);
+            
+            let semanticScore = 0;
+            if (keywordEmbedding) {
+                const topRepos = getTopRepoSummaries(repos);
+                const candDoc = `${user.bio || ''} ${topRepos.map(r => r.name + ' ' + (r.description || '')).join(' ')}`;
+                if (candDoc.trim()) {
+                    const candOut = await extractor(candDoc, { pooling: 'mean', normalize: true });
+                    semanticScore = cosineSimilarity(keywordEmbedding, candOut.data);
+                }
+            }
+            
+            return { user, repos, events, langBars, semanticScore };
+          })
+        );
 
-        // ── STAGE 5: SCORING & RANKING ───────────────────────────────────────────────
-        send({ type: 'progress', step: 5, total: 5, label: `Scoring ${withLangs.length} candidates...` });
+        // ── STAGE 5: RECIPROCAL RANK FUSION (RRF) ───────────────────────────
+        send({ type: 'progress', step: 5, total: 6, label: 'Fusing scores & ranking...' });
 
-        const effectiveCompanyForScore = (companySignal || extractImpliedCompany(userQuery)) ?? null;
-        const scored = withLangs.map(({ user, repos, events, langBars }) => {
-          const evalRes = semanticRes.evals[user.login];
-          const { displayScore, relevanceScore, breakdown } = computeScore(user, langBars, events, queryTerms, repos, constraints, mode, locationInfo, effectiveCompanyForScore, evalRes);
+        const queryTerms = [...semantic_keywords, primary_language, ...secondary_languages].filter(Boolean);
+        const scored = withLangs.map(({ user, repos, events, langBars, semanticScore }) => {
+          const { displayScore, relevanceScore, breakdown } = computeScore(
+            user, langBars, events, queryTerms, repos, null, 'open', null, null, null
+          );
           const own = repos.filter((r: any) => !r.fork);
           return {
             handle: user.login,
@@ -1517,148 +1272,45 @@ ${companySignal && !locationInfo ? `- IMPORTANT: At least 2 queries MUST contain
             stars: own.reduce((a: number, r: any) => a + (r.stargazers_count || 0), 0),
             contactDetails: extractContactDetails(user),
             languages: langBars,
-            proficientLanguages: langBars.slice(0, 3).map((l: LanguageBar) => l.name),
+            proficientLanguages: langBars.slice(0, 3).map((l: any) => l.name),
             commitCalendar: [] as CommitDay[],
             topRepos: getTopRepoSummaries(repos),
-            score: displayScore,
-            relevance: relevanceScore,
+            heuristicScore: displayScore + relevanceScore,
+            semanticScore,
             scoreBreakdown: breakdown,
-            summary: evalRes?.assessment || '',
+            summary: `${langBars[0]?.name || 'Developer'} expert with ${own.length} repos.`,
             accountCreated: user.created_at,
+            score: 0,
+            rrfScore: 0
           };
         });
 
-        // ── THREE-TIER PARTITION ───────────────────────────────────────────────
-        //  full    — has ALL required languages (C AND Assembly both present)
-        //  primary — has PRIMARY only, missing secondary (has C, no Assembly in repos)
-        //  none    — has neither (JS dev in Delhi, no C or Assembly at all)
-        //
-        // IMPORTANT: When no language is explicitly in the query text (e.g. "kernel developers"),
-        // we fall back to the role constraints' must-list so the filter still fires.
-        const primaryLangReq = langInfo.primary
-          ? langInfo.primary.toLowerCase()
-          : (constraints?.must?.[0]?.toLowerCase() ?? null);
-        const secondaryLangReqs = langInfo.secondary.length > 0
-          ? langInfo.secondary.map((l: string) => l.toLowerCase())
-          : (constraints?.must?.slice(1).map((l: string) => l.toLowerCase()) ?? []);
-        const allRequired = [...(primaryLangReq ? [primaryLangReq] : []), ...secondaryLangReqs];
-
-        // Negative languages from role constraints — we use these for the hard filter below.
-        const negRequired = constraints?.negative?.map((l: string) => l.toLowerCase()) ?? [];
-
-        const getMatchTier = (p: typeof scored[0]): { tier: 'full'|'primary'|'none'; missingLangs: string[] } => {
-          const devLangs = p.languages.filter(l => l.percentage > 0.5).map(l => l.name.toLowerCase());
-          const matchLang = (r: string) => devLangs.some(dl =>
-            dl === r || dl.replace(/[+#]/g,'') === r.replace(/[+#]/g,'')
-          );
-
-          // ── HARD NEGATIVE FILTER ─────────────────────────────────────────────
-          // If the primary language (dominant % of their codebase) is in the negative list,
-          // this person is categorically wrong for the role — drop immediately.
-          if (negRequired.length > 0 && devLangs.length > 0) {
-            const primaryDevLang = devLangs[0]; // highest-% language
-            const primaryDevPct  = p.languages[0]?.percentage ?? 0;
-            const primaryIsNeg   = negRequired.some(n => n === primaryDevLang || primaryDevLang.replace(/[+#]/g,'') === n.replace(/[+#]/g,''));
-            // Also compute total % in negative langs
-            const negTotalPct = p.languages
-              .filter(l => negRequired.some(n => langExact(l.name, n)))
-              .reduce((a, l) => a + l.percentage, 0);
-            // Drop if: primary lang is negative AND it dominates >30% of their codebase
-            if (primaryIsNeg && negTotalPct > 30) return { tier: 'none', missingLangs: allRequired };
-          }
-
-          if (allRequired.length === 0) return { tier: 'full', missingLangs: [] };
-          const missing = allRequired.filter(r => !matchLang(r));
-          if (missing.length === 0) return { tier: 'full', missingLangs: [] };
-          // Has primary language but missing some/all secondary
-          if (primaryLangReq && matchLang(primaryLangReq)) return { tier: 'primary', missingLangs: missing };
-          return { tier: 'none', missingLangs: missing };
-        };
-
-        const resultCap = mode === 'person' ? 5 : 20;
+        // Calculate RRF
+        const k = 60;
+        const sortedByHeuristic = [...scored].sort((a, b) => b.heuristicScore - a.heuristicScore);
+        const sortedBySemantic = [...scored].sort((a, b) => b.semanticScore - a.semanticScore);
         
-        const allWithTiers = scored.map(p => {
-          const { tier, missingLangs } = getMatchTier(p);
-          return { ...p, matchTier: tier, missingLangs };
+        const heuristicRankMap = new Map();
+        sortedByHeuristic.forEach((c, i) => heuristicRankMap.set(c.handle, i + 1));
+        
+        const semanticRankMap = new Map();
+        sortedBySemantic.forEach((c, i) => semanticRankMap.set(c.handle, i + 1));
+        
+        scored.forEach(c => {
+            const hRank = heuristicRankMap.get(c.handle);
+            const sRank = semanticRankMap.get(c.handle);
+            c.rrfScore = (1 / (k + hRank)) + (1 / (k + sRank));
+            c.score = c.heuristicScore; // keep display score
         });
 
-        // ── STRICT STACK FILTER (mirrors the deterministic path) ──────────────
-        // Drop tier 'none' — people who lack the role's required languages entirely.
-        // For technical role searches, this is a hard gate, not a soft penalty.
-        let validCandidates = mode === 'technical'
-          ? allWithTiers.filter(p => p.matchTier !== 'none')
-          : allWithTiers;
+        const finalCandidates = scored.sort((a, b) => b.rrfScore - a.rrfScore).slice(0, 20);
 
-        // For person searches, strictly filter out false-positives using the AI's identity assessment or deterministic target match BEFORE capping.
-        if (mode === 'person') {
-          // Normalize targets list
-          const targetUsernames: string[] = [];
-          if (params.likelyUsername) targetUsernames.push(params.likelyUsername.toLowerCase().trim());
-          if (Array.isArray(params.likelyUsernames)) {
-            params.likelyUsernames.forEach((u: any) => {
-              if (typeof u === 'string' && u) {
-                const uLower = u.toLowerCase().trim();
-                if (!targetUsernames.includes(uLower)) targetUsernames.push(uLower);
-              }
-            });
-          }
-
-          const targetNames: string[] = [];
-          if (params.realName) targetNames.push(params.realName.toLowerCase().trim());
-          if (Array.isArray(params.realNames)) {
-            params.realNames.forEach((n: any) => {
-              if (typeof n === 'string' && n) {
-                const nLower = n.toLowerCase().trim();
-                if (!targetNames.includes(nLower)) targetNames.push(nLower);
-              }
-            });
-          }
-
-          // Check if any candidate is an exact match for target username or target real name
-          const hasExactMatch = validCandidates.some(p => {
-            const handle = p.handle.toLowerCase();
-            const name = p.name.toLowerCase();
-            return targetUsernames.includes(handle) || targetNames.includes(name);
-          });
-
-          if (hasExactMatch) {
-            // If we have an exact match, only return candidates that match the target username or target real name
-            validCandidates = validCandidates.filter(p => {
-              const handle = p.handle.toLowerCase();
-              const name = p.name.toLowerCase();
-              return targetUsernames.includes(handle) || targetNames.includes(name);
-            });
-          } else if (semanticRes.orderedHandles && semanticRes.orderedHandles.length > 0) {
-            // Fallback to LLM orderedHandles if no deterministic exact match is found in the pool
-            validCandidates = validCandidates.filter(p => semanticRes.orderedHandles!.includes(p.handle));
-          }
-        }
-
-        // STRICT QUALITY RANKING: Sort strictly by quality score, ignoring match tier grouping
-        const presorted = validCandidates.sort((a, b) => b.score - a.score).slice(0, resultCap);
-
-        // Update searchQuality based on what we found (before cap)
-        const fullMatches = validCandidates.filter(p => p.matchTier === 'full');
-        const partialMatches = validCandidates.filter(p => p.matchTier === 'primary');
-        
-        if (allRequired.length > 0 && fullMatches.length === 0 && partialMatches.length === 0) {
-          searchQuality = 'none';
-        } else if (allRequired.length > 0 && fullMatches.length < 3) {
-          if (searchQuality === 'good') searchQuality = 'partial';
-        }
-
-        const top15 = presorted.slice(0, 15);
+        const top15 = finalCandidates.slice(0, 15);
         await Promise.all(top15.map(async (p) => {
           p.commitCalendar = await getYearContributions(p.handle, token);
         }));
-        
-        let finalCandidates = presorted
-          .map(p => ({ ...p, summary: p.summary || `${p.proficientLanguages.join(', ')} developer with ${p.stars} stars across ${p.own_repos} repos.` }))
-          .filter(p => p.score >= 3);
 
-        const final = finalCandidates;
-
-        send({ type: 'done', data: final, searchQuality, locationFiltered: !!(locationInfo && mode !== 'person') });
+        send({ type: 'done', data: finalCandidates, searchQuality: 'good', locationFiltered: primary_locations.length > 0 });
         controller.close();
 
       } catch (err: any) {
